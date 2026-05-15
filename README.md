@@ -20,6 +20,8 @@ OrderAPI
 
 ## Fluxo de Pagamento
 
+![Payment Flow](docs/Paymentflow.svg)
+
 1. `OrderAPI` publica `OrderCreated` no SNS `order.events`
 2. `PaymentsAPI` consome via SQS (com unwrap do envelope SNS)
 3. Cria preferência de pagamento no Mercado Pago (Checkout Pro)
