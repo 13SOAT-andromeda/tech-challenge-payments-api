@@ -107,32 +107,32 @@ func (c *Client) GetPaymentStatus(ctx context.Context, paymentID string) (domain
 	return status, resp.NetAmount, resp.ExternalReference, nil
 }
 
-func (c *Client) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error) {
+func (c *Client) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (ports.MerchantOrderResult, error) {
 	start := time.Now()
 	slog.Info("mp.GetMerchantOrderPaymentID inicio", "merchant_order_id", merchantOrderID)
 
 	id, err := strconv.Atoi(merchantOrderID)
 	if err != nil {
 		slog.Error("mp.GetMerchantOrderPaymentID id inválido", "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
-		return "", fmt.Errorf("merchant_order_id inválido %q: %w", merchantOrderID, err)
+		return ports.MerchantOrderResult{}, fmt.Errorf("merchant_order_id inválido %q: %w", merchantOrderID, err)
 	}
 
 	resp, err := c.merchantOrderClient.Get(ctx, id)
 	if err != nil {
 		slog.Error("mp.GetMerchantOrderPaymentID erro", "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
-		return "", fmt.Errorf("consultar merchant order %s: %w", merchantOrderID, err)
+		return ports.MerchantOrderResult{}, fmt.Errorf("consultar merchant order %s: %w", merchantOrderID, err)
 	}
 
 	for _, p := range resp.Payments {
 		if p.Status == "approved" {
 			paymentID := strconv.Itoa(p.ID)
 			slog.Info("mp.GetMerchantOrderPaymentID concluído", "merchant_order_id", merchantOrderID, "payment_id", paymentID, "duration_ms", time.Since(start).Milliseconds())
-			return paymentID, nil
+			return ports.MerchantOrderResult{PaymentID: paymentID, OrderID: resp.ExternalReference}, nil
 		}
 	}
 
 	slog.Warn("mp.GetMerchantOrderPaymentID sem pagamento aprovado", "merchant_order_id", merchantOrderID, "payments_count", len(resp.Payments), "duration_ms", time.Since(start).Milliseconds())
-	return "", ports.ErrNoApprovedPayment
+	return ports.MerchantOrderResult{OrderID: resp.ExternalReference}, ports.ErrNoApprovedPayment
 }
 
 func mapStatus(s string) domain.PaymentStatus {

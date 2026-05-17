@@ -27,7 +27,6 @@ import (
 	mercadopago "github.com/gedanmx/payments-api/internal/adapters/out/mercadopago"
 	outsns "github.com/gedanmx/payments-api/internal/adapters/out/sns"
 	"github.com/gedanmx/payments-api/internal/core/services"
-	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 func main() {
@@ -73,14 +72,11 @@ func main() {
 
 	webhookHandler := inhttp.NewWebhookHandler(paymentService, mpClient, os.Getenv("MERCADOPAGO_WEBHOOK_SECRET"))
 	healthHandler := inhttp.NewHealthHandler(repo.DB(), sqsClient, snsClient, os.Getenv("SQS_QUEUE_URL_ORDER_EVENTS"), os.Getenv("SNS_TOPIC_ARN_PAYMENT"))
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhooks/mercadopago", webhookHandler.Handle)
-	mux.HandleFunc("GET /health", healthHandler.Handle)
-	mux.Handle("/docs/", httpSwagger.WrapHandler)
+	router := inhttp.SetupRouter(webhookHandler, healthHandler)
 
 	server := &http.Server{
 		Addr:    ":" + getEnv("PORT", "8080"),
-		Handler: mux,
+		Handler: router,
 	}
 
 	go func() {

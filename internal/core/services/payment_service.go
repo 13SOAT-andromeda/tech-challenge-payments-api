@@ -231,13 +231,13 @@ func (s *PaymentService) ProcessWebhook(ctx context.Context, paymentID string) e
 			)
 		}
 		if err := s.broker.PublishPaymentFailed(ctx, ports.PaymentFailedEvent{
-			OrderID:       payment.OrderID,
-			PaymentID:     paymentID,
-			PreferenceID:  payment.PreferenceID,
-			Amount:        payment.TransactionAmount,
-			Currency:      payment.Currency,
-			Reason:        string(mpStatus),
-			FailedAt:      now,
+			OrderID:      payment.OrderID,
+			PaymentID:    paymentID,
+			PreferenceID: payment.PreferenceID,
+			Amount:       payment.TransactionAmount,
+			Currency:     payment.Currency,
+			Reason:       string(mpStatus),
+			FailedAt:     now,
 		}); err != nil {
 			slog.Error("service.ProcessWebhook erro ao publicar PaymentFailed",
 				"payment_id", paymentID,
@@ -255,5 +255,59 @@ func (s *PaymentService) ProcessWebhook(ctx context.Context, paymentID string) e
 		return nil
 	}
 
+	return nil
+}
+
+func (s *PaymentService) ProcessPaymentRejected(ctx context.Context, orderID string) error {
+	start := time.Now()
+	slog.Info("service.ProcessPaymentRejected início", "op", "ProcessPaymentRejected", "order_id", orderID)
+
+	payment, err := s.repository.FindByOrderID(ctx, orderID)
+	if err != nil {
+		slog.Warn("service.ProcessPaymentRejected pagamento não encontrado no repositório",
+			"order_id", orderID,
+			"error", err,
+		)
+		payment = domain.Payment{OrderID: orderID}
+	}
+
+	if payment.BusinessStatus.IsFinal() {
+		slog.Info("service.ProcessPaymentRejected idempotente — ignorado",
+			"order_id", orderID,
+			"business_status", payment.BusinessStatus,
+		)
+		return nil
+	}
+
+	if err := s.repository.UpdatePayment(ctx, payment.OrderID, payment.PaymentID, payment.NetAmount,
+		domain.StatusFailed, domain.BusinessStatusFailed, domain.SagaStatusFailed); err != nil {
+		slog.Warn("service.ProcessPaymentRejected falha ao atualizar repositório",
+			"order_id", orderID,
+			"error", err,
+		)
+	}
+
+	now := time.Now()
+	if err := s.broker.PublishPaymentRejected(ctx, ports.PaymentFailedEvent{
+		OrderID:      payment.OrderID,
+		PaymentID:    payment.PaymentID,
+		PreferenceID: payment.PreferenceID,
+		Amount:       payment.TransactionAmount,
+		Currency:     payment.Currency,
+		Reason:       "rejected",
+		FailedAt:     now,
+	}); err != nil {
+		slog.Error("service.ProcessPaymentRejected erro ao publicar PaymentRejected",
+			"order_id", orderID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return err
+	}
+
+	slog.Info("service.ProcessPaymentRejected concluído",
+		"order_id", orderID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
 }

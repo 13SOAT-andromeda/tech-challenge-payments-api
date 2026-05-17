@@ -125,10 +125,10 @@ func (c *Consumer) process(ctx context.Context, msgID, body string) error {
 	slog.Info("sqs.message recebida", "msg_id", msgID, "event_type", header.EventType)
 
 	switch header.EventType {
-	case "order.approved":
+	case "order.finished":
 		var event services.PaymentRequestedEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return fmt.Errorf("%w: parse order.approved: %v", errPermanent, err)
+			return fmt.Errorf("%w: parse order.finished: %v", errPermanent, err)
 		}
 		if event.Payload.OrderID == "" {
 			return fmt.Errorf("%w: order_id ausente", errPermanent)

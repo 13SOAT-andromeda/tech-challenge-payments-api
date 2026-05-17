@@ -94,14 +94,28 @@ func (p *Publisher) PublishPaymentApproved(ctx context.Context, event ports.Paym
 
 func (p *Publisher) PublishPaymentFailed(ctx context.Context, event ports.PaymentFailedEvent) error {
 	payload := map[string]interface{}{
-		"order_id":     event.OrderID,
-		"payment_id":   event.PaymentID,
+		"order_id":      event.OrderID,
+		"payment_id":    event.PaymentID,
 		"preference_id": event.PreferenceID,
-		"amount":       event.Amount,
-		"currency":     event.Currency,
-		"reason":       event.Reason,
-		"failed_at":    event.FailedAt.UTC().Format(time.RFC3339),
-		"saga_status":  "FAILED",
+		"amount":        event.Amount,
+		"currency":      event.Currency,
+		"reason":        event.Reason,
+		"failed_at":     event.FailedAt.UTC().Format(time.RFC3339),
+		"saga_status":   "FAILED",
 	}
 	return p.publish(ctx, "payment.failed", payload)
+}
+
+func (p *Publisher) PublishPaymentRejected(ctx context.Context, event ports.PaymentFailedEvent) error {
+	payload := map[string]interface{}{
+		"order_id":      event.OrderID,
+		"payment_id":    event.PaymentID,
+		"preference_id": event.PreferenceID,
+		"amount":        event.Amount,
+		"currency":      event.Currency,
+		"reason":        event.Reason,
+		"failed_at":     event.FailedAt.UTC().Format(time.RFC3339),
+		"saga_status":   "FAILED",
+	}
+	return p.publish(ctx, "payment.rejected", payload)
 }

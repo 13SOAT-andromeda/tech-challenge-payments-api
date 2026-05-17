@@ -36,4 +36,5 @@ type MessageBroker interface {
 	PublishPaymentCheckoutCreated(ctx context.Context, event PaymentCheckoutCreatedEvent) error
 	PublishPaymentApproved(ctx context.Context, event PaymentApprovedEvent) error
 	PublishPaymentFailed(ctx context.Context, event PaymentFailedEvent) error
+	PublishPaymentRejected(ctx context.Context, event PaymentFailedEvent) error
 }

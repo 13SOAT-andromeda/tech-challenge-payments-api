@@ -37,8 +37,13 @@ type CreatePreferenceResponse struct {
 	CheckoutURL  string
 }
 
+type MerchantOrderResult struct {
+	PaymentID string
+	OrderID   string
+}
+
 type PaymentGateway interface {
 	CreatePreference(ctx context.Context, req CreatePreferenceRequest) (CreatePreferenceResponse, error)
 	GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, string, error)
-	GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error)
+	GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (MerchantOrderResult, error)
 }

@@ -26,17 +26,19 @@ func (m *mockGateway) GetPaymentStatus(ctx context.Context, paymentID string) (d
 	return status, amount, "order-001", err
 }
 
-func (m *mockGateway) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error) {
-	return "", nil
+func (m *mockGateway) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (ports.MerchantOrderResult, error) {
+	return ports.MerchantOrderResult{}, nil
 }
 
 type mockBroker struct {
 	checkoutCreatedCalled bool
 	approvedCalled        bool
 	failedCalled          bool
+	rejectedCalled        bool
 	checkoutErr           error
 	approvedErr           error
 	failedErr             error
+	rejectedErr           error
 }
 
 func (m *mockBroker) PublishPaymentCheckoutCreated(_ context.Context, _ ports.PaymentCheckoutCreatedEvent) error {
@@ -52,6 +54,11 @@ func (m *mockBroker) PublishPaymentApproved(_ context.Context, _ ports.PaymentAp
 func (m *mockBroker) PublishPaymentFailed(_ context.Context, _ ports.PaymentFailedEvent) error {
 	m.failedCalled = true
 	return m.failedErr
+}
+
+func (m *mockBroker) PublishPaymentRejected(_ context.Context, _ ports.PaymentFailedEvent) error {
+	m.rejectedCalled = true
+	return m.rejectedErr
 }
 
 type mockRepo struct {

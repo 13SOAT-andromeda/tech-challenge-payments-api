@@ -123,10 +123,20 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	case "topic_merchant_order_wh":
 		merchantOrderID := payload.ID
-		paymentID, err := h.gateway.GetMerchantOrderPaymentID(r.Context(), merchantOrderID)
+		result, err := h.gateway.GetMerchantOrderPaymentID(r.Context(), merchantOrderID)
 		if err != nil {
 			if errors.Is(err, ports.ErrNoApprovedPayment) {
-				slog.Warn("webhook.Handle merchant order sem pagamento aprovado", "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
+				if result.OrderID == "" {
+					slog.Warn("webhook.Handle merchant order sem pagamento aprovado e sem order_id", "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				slog.Warn("webhook.Handle merchant order sem pagamento aprovado — publicando rejeição", "merchant_order_id", merchantOrderID, "order_id", result.OrderID, "duration_ms", time.Since(start).Milliseconds())
+				if err := h.service.ProcessPaymentRejected(r.Context(), result.OrderID); err != nil {
+					slog.Error("webhook.Handle erro ao processar rejeição", "order_id", result.OrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+					http.Error(w, "erro interno", http.StatusInternalServerError)
+					return
+				}
 				w.WriteHeader(http.StatusOK)
 				return
 			}
@@ -134,12 +144,12 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "erro interno", http.StatusInternalServerError)
 			return
 		}
-		if err := h.service.ProcessWebhook(r.Context(), paymentID); err != nil {
-			slog.Error("webhook.Handle erro", "payment_id", paymentID, "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		if err := h.service.ProcessWebhook(r.Context(), result.PaymentID); err != nil {
+			slog.Error("webhook.Handle erro", "payment_id", result.PaymentID, "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
 			http.Error(w, "erro interno", http.StatusInternalServerError)
 			return
 		}
-		slog.Info("webhook.Handle concluído", "payment_id", paymentID, "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
+		slog.Info("webhook.Handle concluído", "payment_id", result.PaymentID, "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
 
 	default:
 		w.WriteHeader(http.StatusOK)
