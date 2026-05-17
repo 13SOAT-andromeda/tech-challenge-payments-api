@@ -1,36 +1,50 @@
 package mercadopago
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"log/slog"
+	"os"
+	"strconv"
 	"time"
+
+	mpconfig "github.com/mercadopago/sdk-go/pkg/config"
+	"github.com/mercadopago/sdk-go/pkg/merchantorder"
+	"github.com/mercadopago/sdk-go/pkg/payment"
+	"github.com/mercadopago/sdk-go/pkg/preference"
 
 	"github.com/gedanmx/payments-api/internal/core/domain"
 	"github.com/gedanmx/payments-api/internal/core/ports"
 )
 
-const baseURL = "https://api.mercadopago.com"
 
 type Client struct {
-	httpClient  *http.Client
-	accessToken string
+	preferenceClient    preference.Client
+	paymentClient       payment.Client
+	merchantOrderClient merchantorder.Client
 }
 
-func NewClient(accessToken string) *Client {
-	return &Client{
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		accessToken: accessToken,
+// NewClient builds a MercadoPago client. The environment (test vs production)
+// is inferred from the token prefix: "TEST-" → sandbox, "APP_USR-" → production.
+func NewClient(accessToken string) (*Client, error) {
+	cfg, err := mpconfig.New(accessToken)
+	if err != nil {
+		return nil, fmt.Errorf("configurar SDK mercado pago: %w", err)
 	}
+	return &Client{
+		preferenceClient:    preference.NewClient(cfg),
+		paymentClient:       payment.NewClient(cfg),
+		merchantOrderClient: merchantorder.NewClient(cfg),
+	}, nil
 }
 
 func (c *Client) CreatePreference(ctx context.Context, req ports.CreatePreferenceRequest) (ports.CreatePreferenceResponse, error) {
-	items := make([]preferenceItem, len(req.Items))
+	start := time.Now()
+	slog.Info("mp.CreatePreference inicio", "order_id", req.OrderID)
+
+	items := make([]preference.ItemRequest, len(req.Items))
 	for i, item := range req.Items {
-		items[i] = preferenceItem{
+		items[i] = preference.ItemRequest{
 			ID:         item.ID,
 			Title:      item.Title,
 			Quantity:   item.Quantity,
@@ -39,81 +53,86 @@ func (c *Client) CreatePreference(ctx context.Context, req ports.CreatePreferenc
 		}
 	}
 
-	body := preferenceRequest{
+	request := preference.Request{
 		ExternalReference: req.OrderID,
 		Items:             items,
-		Payer:             payer{Email: req.CustomerEmail},
-		NotificationURL:   req.WebhookURL,
-		BackURLs: backURLs{
+		Payer:             &preference.PayerRequest{Email: req.CustomerEmail},
+	}
+
+	if req.BackURLs.Success != "" {
+		request.BackURLs = &preference.BackURLsRequest{
 			Success: req.BackURLs.Success,
 			Failure: req.BackURLs.Failure,
 			Pending: req.BackURLs.Pending,
-		},
-		AutoReturn: "approved",
+		}
+		request.AutoReturn = "approved"
 	}
 
-	data, err := json.Marshal(body)
+	resp, err := c.preferenceClient.Create(ctx, request)
 	if err != nil {
-		return ports.CreatePreferenceResponse{}, fmt.Errorf("serializar body: %w", err)
+		slog.Error("mp.CreatePreference erro", "order_id", req.OrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return ports.CreatePreferenceResponse{}, fmt.Errorf("criar preferência: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/checkout/preferences", bytes.NewReader(data))
-	if err != nil {
-		return ports.CreatePreferenceResponse{}, err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.accessToken)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return ports.CreatePreferenceResponse{}, fmt.Errorf("chamada mercado pago: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		return ports.CreatePreferenceResponse{}, fmt.Errorf("mercado pago retornou %d: %s", resp.StatusCode, respBody)
+	checkoutURL := resp.InitPoint
+	if os.Getenv("MERCADOPAGO_SANDBOX") == "true" {
+		checkoutURL = resp.SandboxInitPoint
 	}
 
-	var result preferenceResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return ports.CreatePreferenceResponse{}, fmt.Errorf("parsear resposta: %w", err)
-	}
-
+	slog.Info("mp.CreatePreference concluído", "order_id", req.OrderID, "preference_id", resp.ID, "duration_ms", time.Since(start).Milliseconds())
 	return ports.CreatePreferenceResponse{
-		PreferenceID: result.ID,
-		CheckoutURL:  result.InitPoint,
+		PreferenceID: resp.ID,
+		CheckoutURL:  checkoutURL,
 	}, nil
 }
 
-func (c *Client) GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/payments/%s", baseURL, paymentID), nil)
+func (c *Client) GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, string, error) {
+	start := time.Now()
+	slog.Info("mp.GetPaymentStatus inicio", "payment_id", paymentID)
+
+	id, err := strconv.Atoi(paymentID)
 	if err != nil {
-		return "", 0, err
+		slog.Error("mp.GetPaymentStatus payment_id inválido", "payment_id", paymentID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return "", 0, "", fmt.Errorf("payment_id inválido %q: %w", paymentID, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.accessToken)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.paymentClient.Get(ctx, id)
 	if err != nil {
-		return "", 0, fmt.Errorf("consultar pagamento %s: %w", paymentID, err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusNotFound {
-		return "", 0, fmt.Errorf("pagamento %s não encontrado no mercado pago", paymentID)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("mercado pago retornou %d: %s", resp.StatusCode, respBody)
+		slog.Error("mp.GetPaymentStatus erro", "payment_id", paymentID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return "", 0, "", fmt.Errorf("consultar pagamento %s: %w", paymentID, err)
 	}
 
-	var result paymentResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", 0, fmt.Errorf("parsear resposta de pagamento: %w", err)
+	status := mapStatus(resp.Status)
+	slog.Info("mp.GetPaymentStatus concluído", "payment_id", paymentID, "mp_status", status, "order_id", resp.ExternalReference, "duration_ms", time.Since(start).Milliseconds())
+	return status, resp.NetAmount, resp.ExternalReference, nil
+}
+
+func (c *Client) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error) {
+	start := time.Now()
+	slog.Info("mp.GetMerchantOrderPaymentID inicio", "merchant_order_id", merchantOrderID)
+
+	id, err := strconv.Atoi(merchantOrderID)
+	if err != nil {
+		slog.Error("mp.GetMerchantOrderPaymentID id inválido", "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return "", fmt.Errorf("merchant_order_id inválido %q: %w", merchantOrderID, err)
 	}
 
-	status := mapStatus(result.Status)
-	return status, result.NetAmount, nil
+	resp, err := c.merchantOrderClient.Get(ctx, id)
+	if err != nil {
+		slog.Error("mp.GetMerchantOrderPaymentID erro", "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return "", fmt.Errorf("consultar merchant order %s: %w", merchantOrderID, err)
+	}
+
+	for _, p := range resp.Payments {
+		if p.Status == "approved" {
+			paymentID := strconv.Itoa(p.ID)
+			slog.Info("mp.GetMerchantOrderPaymentID concluído", "merchant_order_id", merchantOrderID, "payment_id", paymentID, "duration_ms", time.Since(start).Milliseconds())
+			return paymentID, nil
+		}
+	}
+
+	slog.Warn("mp.GetMerchantOrderPaymentID sem pagamento aprovado", "merchant_order_id", merchantOrderID, "payments_count", len(resp.Payments), "duration_ms", time.Since(start).Milliseconds())
+	return "", ports.ErrNoApprovedPayment
 }
 
 func mapStatus(s string) domain.PaymentStatus {
@@ -127,42 +146,4 @@ func mapStatus(s string) domain.PaymentStatus {
 	default:
 		return domain.StatusPending
 	}
-}
-
-type preferenceRequest struct {
-	ExternalReference string          `json:"external_reference"`
-	Items             []preferenceItem `json:"items"`
-	Payer             payer           `json:"payer"`
-	NotificationURL   string          `json:"notification_url"`
-	BackURLs          backURLs        `json:"back_urls"`
-	AutoReturn        string          `json:"auto_return"`
-}
-
-type preferenceItem struct {
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Quantity   int     `json:"quantity"`
-	UnitPrice  float64 `json:"unit_price"`
-	CurrencyID string  `json:"currency_id"`
-}
-
-type payer struct {
-	Email string `json:"email"`
-}
-
-type backURLs struct {
-	Success string `json:"success"`
-	Failure string `json:"failure"`
-	Pending string `json:"pending"`
-}
-
-type preferenceResponse struct {
-	ID        string `json:"id"`
-	InitPoint string `json:"init_point"`
-}
-
-type paymentResponse struct {
-	ID        string  `json:"id"`
-	Status    string  `json:"status"`
-	NetAmount float64 `json:"net_amount"`
 }

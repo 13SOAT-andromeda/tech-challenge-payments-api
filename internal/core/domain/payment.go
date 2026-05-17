@@ -43,15 +43,14 @@ const (
 type Payment struct {
 	ID                string
 	OrderID           string
-	CorrelationID     string
 	Provider          string
 	PreferenceID      string
 	PaymentID         string
 	CheckoutURL       string
 	ExpiresAt         *time.Time
-	BusinessStatus    BusinessStatus
-	SagaStatus        SagaStatus
-	Status            PaymentStatus
+	BusinessStatus BusinessStatus
+	Status         SagaStatus
+	PaymentStatus  PaymentStatus
 	TransactionAmount float64
 	NetAmount         float64
 	Currency          string

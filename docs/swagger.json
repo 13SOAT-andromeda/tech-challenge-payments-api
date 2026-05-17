@@ -1,0 +1,140 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Serviço de pagamentos integrado com Mercado Pago via Checkout Pro.",
+        "title": "Payments API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/",
+    "paths": {
+        "/health": {
+            "get": {
+                "description": "Verifica o status da API, banco de dados PostgreSQL, fila SQS e tópico SNS.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Healthcheck",
+                "responses": {
+                    "200": {
+                        "description": "Todos os componentes saudáveis",
+                        "schema": {
+                            "$ref": "#/definitions/http.HealthResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Uma ou mais dependências indisponíveis",
+                        "schema": {
+                            "$ref": "#/definitions/http.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/webhooks/mercadopago": {
+            "post": {
+                "description": "Recebe notificações de eventos de pagamento do Mercado Pago. Valida a assinatura HMAC-SHA256 antes de processar.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "webhooks"
+                ],
+                "summary": "Webhook Mercado Pago",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Assinatura HMAC-SHA256 no formato ts=\u003cts\u003e,v1=\u003chex\u003e",
+                        "name": "x-signature",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID único da requisição enviado pelo Mercado Pago",
+                        "name": "x-request-id",
+                        "in": "header"
+                    },
+                    {
+                        "description": "Payload da notificação",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.MPWebhookPayload"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Assinatura ausente ou inválida, ou payload malformado",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Erro ao processar o pagamento ou publicar evento",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "http.CheckResult": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "checks": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/http.CheckResult"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.MPWebhookPayload": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "example": "123456789"
+                        }
+                    }
+                },
+                "type": {
+                    "type": "string",
+                    "example": "payment"
+                }
+            }
+        }
+    }
+}

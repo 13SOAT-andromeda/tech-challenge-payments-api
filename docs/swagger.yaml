@@ -1,0 +1,94 @@
+basePath: /
+definitions:
+  http.CheckResult:
+    properties:
+      error:
+        type: string
+      status:
+        type: string
+    type: object
+  http.HealthResponse:
+    properties:
+      checks:
+        additionalProperties:
+          $ref: '#/definitions/http.CheckResult'
+        type: object
+      status:
+        type: string
+    type: object
+  http.MPWebhookPayload:
+    properties:
+      data:
+        properties:
+          id:
+            example: "123456789"
+            type: string
+        type: object
+      type:
+        example: payment
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Serviço de pagamentos integrado com Mercado Pago via Checkout Pro.
+  title: Payments API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: Verifica o status da API, banco de dados PostgreSQL, fila SQS e
+        tópico SNS.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Todos os componentes saudáveis
+          schema:
+            $ref: '#/definitions/http.HealthResponse'
+        "503":
+          description: Uma ou mais dependências indisponíveis
+          schema:
+            $ref: '#/definitions/http.HealthResponse'
+      summary: Healthcheck
+      tags:
+      - health
+  /webhooks/mercadopago:
+    post:
+      consumes:
+      - application/json
+      description: Recebe notificações de eventos de pagamento do Mercado Pago. Valida
+        a assinatura HMAC-SHA256 antes de processar.
+      parameters:
+      - description: Assinatura HMAC-SHA256 no formato ts=<ts>,v1=<hex>
+        in: header
+        name: x-signature
+        required: true
+        type: string
+      - description: ID único da requisição enviado pelo Mercado Pago
+        in: header
+        name: x-request-id
+        type: string
+      - description: Payload da notificação
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/http.MPWebhookPayload'
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Assinatura ausente ou inválida, ou payload malformado
+          schema:
+            type: string
+        "500":
+          description: Erro ao processar o pagamento ou publicar evento
+          schema:
+            type: string
+      summary: Webhook Mercado Pago
+      tags:
+      - webhooks
+swagger: "2.0"

@@ -1,8 +1,14 @@
+// @title           Payments API
+// @version         1.0
+// @description     Serviço de pagamentos integrado com Mercado Pago via Checkout Pro.
+// @host            localhost:8080
+// @BasePath        /
+
 package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,58 +20,63 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/joho/godotenv"
 
+	_ "github.com/gedanmx/payments-api/docs"
 	inhttp "github.com/gedanmx/payments-api/internal/adapters/in/http"
 	insqs "github.com/gedanmx/payments-api/internal/adapters/in/sqs"
 	"github.com/gedanmx/payments-api/internal/adapters/out/database"
 	mercadopago "github.com/gedanmx/payments-api/internal/adapters/out/mercadopago"
 	outsns "github.com/gedanmx/payments-api/internal/adapters/out/sns"
 	"github.com/gedanmx/payments-api/internal/core/services"
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	_ = godotenv.Load()
 
 	requireEnv("MERCADOPAGO_ACCESS_TOKEN")
-	requireEnv("MERCADOPAGO_PUBLIC_KEY")
 	requireEnv("MERCADOPAGO_WEBHOOK_SECRET")
 	requireEnv("SQS_QUEUE_URL_ORDER_EVENTS")
 	requireEnv("SNS_TOPIC_ARN_PAYMENT")
+	requireEnv("DATABASE_URL")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Banco de dados
-	dsn := getEnv("DATABASE_URL", "payments.db")
-	repo, err := database.NewSQLiteRepository(dsn)
+	mpClient, err := mercadopago.NewClient(os.Getenv("MERCADOPAGO_ACCESS_TOKEN"))
 	if err != nil {
-		log.Fatalf("inicializar banco de dados: %v", err)
+		slog.Error("inicializar cliente mercado pago", "error", err)
+		os.Exit(1)
 	}
 
-	// Cliente Mercado Pago
-	mpClient := mercadopago.NewClient(os.Getenv("MERCADOPAGO_ACCESS_TOKEN"))
+	repo, err := database.NewGORMRepository(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		slog.Error("inicializar banco de dados", "error", err)
+		os.Exit(1)
+	}
 
-	// AWS config
 	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(getEnv("AWS_REGION", "us-east-1")))
 	if err != nil {
-		log.Fatalf("carregar config AWS: %v", err)
+		slog.Error("carregar config AWS", "error", err)
+		os.Exit(1)
 	}
 
-	// Publisher SNS → payment.topic
 	snsClient := sns.NewFromConfig(awsCfg)
 	publisher := outsns.NewPublisher(snsClient, os.Getenv("SNS_TOPIC_ARN_PAYMENT"))
 
-	// Serviço de domínio
 	paymentService := services.NewPaymentService(mpClient, publisher, repo)
 
-	// Consumer SQS ← payment-order-events-queue (inscrita no order.events via SNS)
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	consumer := insqs.NewConsumer(sqsClient, os.Getenv("SQS_QUEUE_URL_ORDER_EVENTS"), paymentService)
 	go consumer.Start(ctx)
 
-	// Servidor HTTP
-	webhookHandler := inhttp.NewWebhookHandler(paymentService, os.Getenv("MERCADOPAGO_WEBHOOK_SECRET"))
+	webhookHandler := inhttp.NewWebhookHandler(paymentService, mpClient, os.Getenv("MERCADOPAGO_WEBHOOK_SECRET"))
+	healthHandler := inhttp.NewHealthHandler(repo.DB(), sqsClient, snsClient, os.Getenv("SQS_QUEUE_URL_ORDER_EVENTS"), os.Getenv("SNS_TOPIC_ARN_PAYMENT"))
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhooks/mercadopago", webhookHandler.Handle)
+	mux.HandleFunc("GET /health", healthHandler.Handle)
+	mux.Handle("/docs/", httpSwagger.WrapHandler)
 
 	server := &http.Server{
 		Addr:    ":" + getEnv("PORT", "8080"),
@@ -73,27 +84,29 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("servidor HTTP iniciado na porta %s", getEnv("PORT", "8080"))
+		slog.Info("servidor HTTP iniciado", "port", getEnv("PORT", "8080"))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("servidor HTTP: %v", err)
+			slog.Error("servidor HTTP encerrado inesperadamente", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("encerrando serviço...")
+	slog.Info("encerrando serviço")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("erro no shutdown do servidor HTTP: %v", err)
+		slog.Error("erro no shutdown do servidor HTTP", "error", err)
 	}
 
-	log.Println("serviço encerrado")
+	slog.Info("serviço encerrado")
 }
 
 func requireEnv(key string) {
 	if os.Getenv(key) == "" {
-		log.Fatalf("variável de ambiente obrigatória não definida: %s", key)
+		slog.Error("variável de ambiente obrigatória não definida", "key", key)
+		os.Exit(1)
 	}
 }
 

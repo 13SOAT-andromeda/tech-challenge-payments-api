@@ -3,12 +3,18 @@ package sqs
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gedanmx/payments-api/internal/core/services"
 )
+
+// errPermanent marks errors where retry will never succeed (malformed message, missing required fields).
+var errPermanent = errors.New("permanent")
 
 type Consumer struct {
 	client   *sqs.Client
@@ -25,11 +31,11 @@ func NewConsumer(client *sqs.Client, queueURL string, service *services.PaymentS
 }
 
 func (c *Consumer) Start(ctx context.Context) {
-	log.Println("SQS consumer iniciado")
+	slog.Info("sqs.consumer iniciado")
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("SQS consumer encerrado")
+			slog.Info("sqs.consumer encerrado")
 			return
 		default:
 			c.poll(ctx)
@@ -47,22 +53,42 @@ func (c *Consumer) poll(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("erro ao receber mensagens SQS: %v", err)
+		slog.Error("sqs.receive erro", "error", err)
 		return
 	}
 
 	for _, msg := range out.Messages {
-		if err := c.process(ctx, *msg.Body); err != nil {
-			log.Printf("erro ao processar mensagem %s: %v — mantendo na fila para retry", *msg.MessageId, err)
+		msgID := *msg.MessageId
+		start := time.Now()
+
+		err := c.process(ctx, msgID, *msg.Body)
+		if err != nil && !errors.Is(err, errPermanent) {
+			slog.Error("sqs.message erro — mantendo na fila para retry",
+				"msg_id", msgID,
+				"error", err,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
 			continue
 		}
+		if err != nil {
+			slog.Warn("sqs.message descartada — erro permanente",
+				"msg_id", msgID,
+				"error", err,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+		} else {
+			slog.Info("sqs.message processada com sucesso",
+				"msg_id", msgID,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+		}
 
-		_, err := c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+		_, err = c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 			QueueUrl:      aws.String(c.queueURL),
 			ReceiptHandle: msg.ReceiptHandle,
 		})
 		if err != nil {
-			log.Printf("erro ao deletar mensagem %s do SQS: %v", *msg.MessageId, err)
+			slog.Error("sqs.delete erro", "msg_id", msgID, "error", err)
 		}
 	}
 }
@@ -86,12 +112,33 @@ func unwrapSNS(body string) string {
 	return body
 }
 
-func (c *Consumer) process(ctx context.Context, body string) error {
+func (c *Consumer) process(ctx context.Context, msgID, body string) error {
 	payload := unwrapSNS(body)
 
-	var event services.PaymentRequestedEvent
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return err
+	var header struct {
+		EventType string `json:"event_type"`
 	}
-	return c.service.ProcessPaymentRequest(ctx, event)
+	if err := json.Unmarshal([]byte(payload), &header); err != nil {
+		return fmt.Errorf("%w: parse event envelope: %v", errPermanent, err)
+	}
+
+	slog.Info("sqs.message recebida", "msg_id", msgID, "event_type", header.EventType)
+
+	switch header.EventType {
+	case "order.approved":
+		var event services.PaymentRequestedEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return fmt.Errorf("%w: parse order.approved: %v", errPermanent, err)
+		}
+		if event.Payload.OrderID == "" {
+			return fmt.Errorf("%w: order_id ausente", errPermanent)
+		}
+		return c.service.ProcessPaymentRequest(ctx, event)
+	default:
+		slog.Warn("sqs.event_type desconhecido — mensagem ignorada",
+			"msg_id", msgID,
+			"event_type", header.EventType,
+		)
+		return nil
+	}
 }

@@ -3,8 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"time"
 
 	"github.com/gedanmx/payments-api/internal/core/domain"
@@ -14,14 +13,11 @@ import (
 
 type PaymentRequestedEvent struct {
 	EventType string                `json:"event_type"`
-	EventID   string                `json:"event_id"`
-	Timestamp time.Time             `json:"timestamp"`
 	Payload   PaymentRequestPayload `json:"payload"`
 }
 
 type PaymentRequestPayload struct {
 	OrderID       string        `json:"order_id"`
-	CorrelationID string        `json:"correlation_id"`
 	CustomerID    string        `json:"customer_id"`
 	CustomerEmail string        `json:"customer_email"`
 	Amount        float64       `json:"amount"`
@@ -51,6 +47,22 @@ func NewPaymentService(gateway ports.PaymentGateway, broker ports.MessageBroker,
 }
 
 func (s *PaymentService) ProcessPaymentRequest(ctx context.Context, event PaymentRequestedEvent) error {
+	start := time.Now()
+	slog.Info("service.ProcessPaymentRequest início",
+		"op", "ProcessPaymentRequest",
+		"order_id", event.Payload.OrderID,
+		"event_type", event.EventType,
+	)
+
+	if existing, err := s.repository.FindByOrderID(ctx, event.Payload.OrderID); err == nil {
+		slog.Info("service.ProcessPaymentRequest idempotente — ignorado",
+			"order_id", event.Payload.OrderID,
+			"existing_payment_id", existing.ID,
+			"business_status", existing.BusinessStatus,
+		)
+		return nil
+	}
+
 	items := make([]ports.PaymentItem, len(event.Payload.Items))
 	for i, item := range event.Payload.Items {
 		items[i] = ports.PaymentItem{
@@ -62,22 +74,20 @@ func (s *PaymentService) ProcessPaymentRequest(ctx context.Context, event Paymen
 		}
 	}
 
-	webhookURL := os.Getenv("WEBHOOK_BASE_URL") + "/webhooks/mercadopago"
-
 	resp, err := s.gateway.CreatePreference(ctx, ports.CreatePreferenceRequest{
 		OrderID:       event.Payload.OrderID,
 		CustomerEmail: event.Payload.CustomerEmail,
 		Amount:        event.Payload.Amount,
 		Currency:      event.Payload.Currency,
 		Items:         items,
-		WebhookURL:    webhookURL,
-		BackURLs: ports.BackURLs{
-			Success: os.Getenv("BACK_URL_SUCCESS"),
-			Failure: os.Getenv("BACK_URL_FAILURE"),
-			Pending: os.Getenv("BACK_URL_PENDING"),
-		},
 	})
 	if err != nil {
+		slog.Error("service.ProcessPaymentRequest erro",
+			"op", "ProcessPaymentRequest",
+			"order_id", event.Payload.OrderID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		return fmt.Errorf("criar preferência mercado pago: %w", err)
 	}
 
@@ -87,14 +97,13 @@ func (s *PaymentService) ProcessPaymentRequest(ctx context.Context, event Paymen
 	payment := domain.Payment{
 		ID:                uuid.NewString(),
 		OrderID:           event.Payload.OrderID,
-		CorrelationID:     event.Payload.CorrelationID,
 		Provider:          "MERCADO_PAGO",
 		PreferenceID:      resp.PreferenceID,
 		CheckoutURL:       resp.CheckoutURL,
 		ExpiresAt:         &expiresAt,
-		BusinessStatus:    domain.BusinessStatusPending,
-		SagaStatus:        domain.SagaStatusAwaitingPayment,
-		Status:            domain.StatusPendingCustomerAction,
+		BusinessStatus: domain.BusinessStatusPending,
+		Status:         domain.SagaStatusAwaitingPayment,
+		PaymentStatus:  domain.StatusPendingCustomerAction,
 		TransactionAmount: event.Payload.Amount,
 		Currency:          event.Payload.Currency,
 		CustomerEmail:     event.Payload.CustomerEmail,
@@ -102,46 +111,77 @@ func (s *PaymentService) ProcessPaymentRequest(ctx context.Context, event Paymen
 		UpdatedAt:         now,
 	}
 	if err := s.repository.Save(ctx, payment); err != nil {
+		slog.Error("service.ProcessPaymentRequest erro ao persistir",
+			"order_id", event.Payload.OrderID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		return fmt.Errorf("persistir pagamento: %w", err)
 	}
 
 	if err := s.broker.PublishPaymentCheckoutCreated(ctx, ports.PaymentCheckoutCreatedEvent{
-		CorrelationID: payment.CorrelationID,
 		OrderID:       payment.OrderID,
 		PaymentID:     payment.ID,
 		PreferenceID:  payment.PreferenceID,
 		CheckoutURL:   payment.CheckoutURL,
 		ExpiresAt:     expiresAt,
 	}); err != nil {
+		slog.Error("service.ProcessPaymentRequest erro ao publicar checkout",
+			"order_id", event.Payload.OrderID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		return fmt.Errorf("publicar PaymentCheckoutCreated: %w", err)
 	}
 
-	log.Printf("pagamento iniciado: order_id=%s preference_id=%s correlation_id=%s",
-		event.Payload.OrderID, resp.PreferenceID, event.Payload.CorrelationID)
+	slog.Info("service.ProcessPaymentRequest concluído",
+		"order_id", event.Payload.OrderID,
+		"preference_id", resp.PreferenceID,
+		"checkout_url", resp.CheckoutURL,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
 }
 
 func (s *PaymentService) ProcessWebhook(ctx context.Context, paymentID string) error {
+	start := time.Now()
+	slog.Info("service.ProcessWebhook início", "op", "ProcessWebhook", "payment_id", paymentID)
+
 	existing, err := s.repository.FindByPaymentID(ctx, paymentID)
 	if err == nil && existing.BusinessStatus.IsFinal() {
-		log.Printf("webhook idempotente ignorado: payment_id=%s business_status=%s", paymentID, existing.BusinessStatus)
+		slog.Info("service.ProcessWebhook idempotente — ignorado",
+			"payment_id", paymentID,
+			"business_status", existing.BusinessStatus,
+		)
 		return nil
 	}
 
-	mpStatus, netAmount, err := s.gateway.GetPaymentStatus(ctx, paymentID)
+	mpStatus, netAmount, orderID, err := s.gateway.GetPaymentStatus(ctx, paymentID)
 	if err != nil {
+		slog.Error("service.ProcessWebhook erro ao consultar status",
+			"payment_id", paymentID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		return fmt.Errorf("consultar status pagamento %s: %w", paymentID, err)
 	}
 
 	if mpStatus == domain.StatusPending {
-		log.Printf("pagamento ainda pendente, aguardando novo webhook: payment_id=%s", paymentID)
+		slog.Info("service.ProcessWebhook pagamento ainda pendente",
+			"payment_id", paymentID,
+			"mp_status", mpStatus,
+		)
 		return nil
 	}
 
-	payment, err := s.repository.FindByPaymentID(ctx, paymentID)
+	payment, err := s.repository.FindByOrderID(ctx, orderID)
 	if err != nil {
-		log.Printf("pagamento não encontrado no repositório para payment_id=%s, publicando evento sem correlação local", paymentID)
-		payment = domain.Payment{PaymentID: paymentID}
+		slog.Warn("service.ProcessWebhook pagamento não encontrado no repositório",
+			"payment_id", paymentID,
+			"order_id", orderID,
+			"error", err,
+		)
+		payment = domain.Payment{OrderID: orderID, PaymentID: paymentID}
 	}
 
 	finalMPStatus := mpStatus
@@ -154,24 +194,43 @@ func (s *PaymentService) ProcessWebhook(ctx context.Context, paymentID string) e
 	case domain.StatusApproved:
 		if err := s.repository.UpdatePayment(ctx, payment.OrderID, paymentID, netAmount,
 			finalMPStatus, domain.BusinessStatusApproved, domain.SagaStatusPaymentConfirmed); err != nil {
-			log.Printf("aviso: falha ao atualizar repositório para payment_id=%s: %v", paymentID, err)
+			slog.Warn("service.ProcessWebhook falha ao atualizar repositório",
+				"payment_id", paymentID,
+				"error", err,
+			)
 		}
-		return s.broker.PublishPaymentApproved(ctx, ports.PaymentApprovedEvent{
-			CorrelationID: payment.CorrelationID,
+		if err := s.broker.PublishPaymentApproved(ctx, ports.PaymentApprovedEvent{
 			OrderID:       payment.OrderID,
 			PaymentID:     paymentID,
 			PreferenceID:  payment.PreferenceID,
 			Amount:        payment.TransactionAmount,
 			Currency:      payment.Currency,
 			ApprovedAt:    now,
-		})
+		}); err != nil {
+			slog.Error("service.ProcessWebhook erro ao publicar PaymentApproved",
+				"payment_id", paymentID,
+				"error", err,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			return err
+		}
+		slog.Info("service.ProcessWebhook concluído",
+			"payment_id", paymentID,
+			"mp_status", mpStatus,
+			"business_status", domain.BusinessStatusApproved,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return nil
+
 	case domain.StatusFailed, domain.StatusCancelled:
 		if err := s.repository.UpdatePayment(ctx, payment.OrderID, paymentID, netAmount,
 			finalMPStatus, domain.BusinessStatusFailed, domain.SagaStatusFailed); err != nil {
-			log.Printf("aviso: falha ao atualizar repositório para payment_id=%s: %v", paymentID, err)
+			slog.Warn("service.ProcessWebhook falha ao atualizar repositório",
+				"payment_id", paymentID,
+				"error", err,
+			)
 		}
-		return s.broker.PublishPaymentFailed(ctx, ports.PaymentFailedEvent{
-			CorrelationID: payment.CorrelationID,
+		if err := s.broker.PublishPaymentFailed(ctx, ports.PaymentFailedEvent{
 			OrderID:       payment.OrderID,
 			PaymentID:     paymentID,
 			PreferenceID:  payment.PreferenceID,
@@ -179,7 +238,21 @@ func (s *PaymentService) ProcessWebhook(ctx context.Context, paymentID string) e
 			Currency:      payment.Currency,
 			Reason:        string(mpStatus),
 			FailedAt:      now,
-		})
+		}); err != nil {
+			slog.Error("service.ProcessWebhook erro ao publicar PaymentFailed",
+				"payment_id", paymentID,
+				"error", err,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			return err
+		}
+		slog.Info("service.ProcessWebhook concluído",
+			"payment_id", paymentID,
+			"mp_status", mpStatus,
+			"business_status", domain.BusinessStatusFailed,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return nil
 	}
 
 	return nil

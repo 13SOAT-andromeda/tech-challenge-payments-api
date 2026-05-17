@@ -3,7 +3,7 @@
 - [x] 1.1 Inicializar módulo Go com `go mod init` e criar estrutura de diretórios (`cmd/api/`, `internal/core/domain/`, `internal/core/ports/`, `internal/core/services/`, `internal/adapters/in/http/`, `internal/adapters/in/sqs/`, `internal/adapters/out/mercadopago/`, `internal/adapters/out/sqs/`, `internal/adapters/out/database/`)
 - [x] 1.2 Criar arquivo `.env` com entradas `MERCADOPAGO_PUBLIC_KEY=` e `MERCADOPAGO_ACCESS_TOKEN=` e adicionar `.env` ao `.gitignore`
 - [x] 1.3 Adicionar dependências: `github.com/joho/godotenv`, `github.com/aws/aws-sdk-go-v2`, `github.com/google/uuid`, `github.com/mattn/go-sqlite3`
-- [ ] 1.4 Criar `cmd/api/main.go` com carregamento do `.env` via `godotenv.Load()`, validação das variáveis obrigatórias e ponto de entrada da aplicação
+- [x] 1.4 Criar `cmd/api/main.go` com carregamento do `.env` via `godotenv.Load()`, validação das variáveis obrigatórias e ponto de entrada da aplicação
 
 ## 2. Domain e Ports (Camada Central)
 

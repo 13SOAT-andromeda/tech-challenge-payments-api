@@ -2,9 +2,12 @@ package ports
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gedanmx/payments-api/internal/core/domain"
 )
+
+var ErrNoApprovedPayment = errors.New("merchant order has no approved payment")
 
 type CreatePreferenceRequest struct {
 	OrderID       string
@@ -12,7 +15,6 @@ type CreatePreferenceRequest struct {
 	Amount        float64
 	Currency      string
 	Items         []PaymentItem
-	WebhookURL    string
 	BackURLs      BackURLs
 }
 
@@ -37,5 +39,6 @@ type CreatePreferenceResponse struct {
 
 type PaymentGateway interface {
 	CreatePreference(ctx context.Context, req CreatePreferenceRequest) (CreatePreferenceResponse, error)
-	GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, error)
+	GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, string, error)
+	GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error)
 }

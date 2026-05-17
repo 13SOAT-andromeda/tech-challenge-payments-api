@@ -5,27 +5,33 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/gedanmx/payments-api/internal/core/ports"
 	"github.com/gedanmx/payments-api/internal/core/services"
 )
 
 type WebhookHandler struct {
 	service       *services.PaymentService
+	gateway       ports.PaymentGateway
 	webhookSecret string
 }
 
-func NewWebhookHandler(service *services.PaymentService, webhookSecret string) *WebhookHandler {
-	return &WebhookHandler{service: service, webhookSecret: webhookSecret}
+func NewWebhookHandler(service *services.PaymentService, gateway ports.PaymentGateway, webhookSecret string) *WebhookHandler {
+	return &WebhookHandler{service: service, gateway: gateway, webhookSecret: webhookSecret}
 }
 
-type mpWebhookPayload struct {
-	Type string `json:"type"`
+// MPWebhookPayload is the notification body sent by Mercado Pago.
+type MPWebhookPayload struct {
+	ID   string `json:"id" example:"40928737633"`
+	Type string `json:"type" example:"payment"`
 	Data struct {
-		ID string `json:"id"`
+		ID string `json:"id" example:"123456789"`
 	} `json:"data"`
 }
 
@@ -49,7 +55,7 @@ func validateSignature(secret, xSignature, xRequestID, notificationID string) bo
 		return false
 	}
 
-	manifest := fmt.Sprintf("id:%s;request-id:%s;ts:%s", notificationID, xRequestID, ts)
+	manifest := fmt.Sprintf("id:%s;request-id:%s;ts:%s;", notificationID, xRequestID, ts)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(manifest))
 	expected := hex.EncodeToString(mac.Sum(nil))
@@ -61,45 +67,84 @@ func validateSignature(secret, xSignature, xRequestID, notificationID string) bo
 	return hmac.Equal([]byte(expected), []byte(hex.EncodeToString(received)))
 }
 
+// Handle processa notificações de pagamento recebidas do Mercado Pago.
+//
+// @Summary      Webhook Mercado Pago
+// @Description  Recebe notificações de eventos de pagamento do Mercado Pago. Valida a assinatura HMAC-SHA256 antes de processar.
+// @Tags         webhooks
+// @Accept       json
+// @Produce      plain
+// @Param        x-signature    header    string             true   "Assinatura HMAC-SHA256 no formato ts=<ts>,v1=<hex>"
+// @Param        x-request-id   header    string             false  "ID único da requisição enviado pelo Mercado Pago"
+// @Param        payload        body      MPWebhookPayload   true   "Payload da notificação"
+// @Success      200
+// @Failure      400  {string}  string  "Assinatura ausente ou inválida, ou payload malformado"
+// @Failure      500  {string}  string  "Erro ao processar o pagamento ou publicar evento"
+// @Router       /webhooks/mercadopago [post]
 func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	xSignature := r.Header.Get("x-signature")
 	xRequestID := r.Header.Get("x-request-id")
+	dataIDFromURL := r.URL.Query().Get("data.id")
 
 	if xSignature == "" {
-		log.Printf("webhook rejeitado: x-signature ausente, ip=%s", r.RemoteAddr)
+		slog.Warn("webhook rejeitado: x-signature ausente", "remote_addr", r.RemoteAddr, "error", "x-signature ausente")
 		http.Error(w, "assinatura ausente", http.StatusBadRequest)
 		return
 	}
 
-	var payload mpWebhookPayload
+	if !validateSignature(h.webhookSecret, xSignature, xRequestID, dataIDFromURL) {
+		slog.Warn("webhook rejeitado: assinatura inválida", "remote_addr", r.RemoteAddr, "error", "assinatura inválida")
+		http.Error(w, "assinatura inválida", http.StatusBadRequest)
+		return
+	}
+
+	var payload MPWebhookPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "payload inválido", http.StatusBadRequest)
 		return
 	}
 
-	if !validateSignature(h.webhookSecret, xSignature, xRequestID, payload.Data.ID) {
-		log.Printf("webhook rejeitado: assinatura inválida, ip=%s", r.RemoteAddr)
-		http.Error(w, "assinatura inválida", http.StatusBadRequest)
-		return
-	}
+	slog.Info("webhook.Handle recebido", "payment_id", dataIDFromURL, "mp_type", payload.Type)
 
-	if payload.Type != "payment" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	paymentID := payload.Data.ID
-	if paymentID == "" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Responde 200 imediatamente para o MP e processa em background
-	w.WriteHeader(http.StatusOK)
-
-	go func() {
-		if err := h.service.ProcessWebhook(r.Context(), paymentID); err != nil {
-			log.Printf("erro ao processar webhook payment_id=%s: %v", paymentID, err)
+	switch payload.Type {
+	case "payment":
+		paymentID := payload.Data.ID
+		if paymentID == "" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
-	}()
+		if err := h.service.ProcessWebhook(r.Context(), paymentID); err != nil {
+			slog.Error("webhook.Handle erro", "payment_id", paymentID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+			http.Error(w, "erro interno", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("webhook.Handle concluído", "payment_id", paymentID, "duration_ms", time.Since(start).Milliseconds())
+
+	case "topic_merchant_order_wh":
+		merchantOrderID := payload.ID
+		paymentID, err := h.gateway.GetMerchantOrderPaymentID(r.Context(), merchantOrderID)
+		if err != nil {
+			if errors.Is(err, ports.ErrNoApprovedPayment) {
+				slog.Warn("webhook.Handle merchant order sem pagamento aprovado", "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			slog.Error("webhook.Handle erro ao consultar merchant order", "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+			http.Error(w, "erro interno", http.StatusInternalServerError)
+			return
+		}
+		if err := h.service.ProcessWebhook(r.Context(), paymentID); err != nil {
+			slog.Error("webhook.Handle erro", "payment_id", paymentID, "merchant_order_id", merchantOrderID, "error", err, "duration_ms", time.Since(start).Milliseconds())
+			http.Error(w, "erro interno", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("webhook.Handle concluído", "payment_id", paymentID, "merchant_order_id", merchantOrderID, "duration_ms", time.Since(start).Milliseconds())
+
+	default:
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

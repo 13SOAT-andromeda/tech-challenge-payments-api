@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/gedanmx/payments-api/internal/core/domain"
 	"github.com/gedanmx/payments-api/internal/core/ports"
@@ -22,8 +21,13 @@ func (m *mockGateway) CreatePreference(ctx context.Context, req ports.CreatePref
 	return m.createFn(ctx, req)
 }
 
-func (m *mockGateway) GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, error) {
-	return m.getStatusFn(ctx, paymentID)
+func (m *mockGateway) GetPaymentStatus(ctx context.Context, paymentID string) (domain.PaymentStatus, float64, string, error) {
+	status, amount, err := m.getStatusFn(ctx, paymentID)
+	return status, amount, "order-001", err
+}
+
+func (m *mockGateway) GetMerchantOrderPaymentID(ctx context.Context, merchantOrderID string) (string, error) {
+	return "", nil
 }
 
 type mockBroker struct {
@@ -51,11 +55,12 @@ func (m *mockBroker) PublishPaymentFailed(_ context.Context, _ ports.PaymentFail
 }
 
 type mockRepo struct {
-	saved               *domain.Payment
-	findByOrderID       domain.Payment
-	findByPaymentID     domain.Payment
-	findByPaymentIDErr  error
-	updateErr           error
+	saved              *domain.Payment
+	findByOrderID      domain.Payment
+	findByOrderIDErr   error
+	findByPaymentID    domain.Payment
+	findByPaymentIDErr error
+	updateErr          error
 }
 
 func (m *mockRepo) Save(_ context.Context, p domain.Payment) error {
@@ -64,7 +69,7 @@ func (m *mockRepo) Save(_ context.Context, p domain.Payment) error {
 }
 
 func (m *mockRepo) FindByOrderID(_ context.Context, _ string) (domain.Payment, error) {
-	return m.findByOrderID, nil
+	return m.findByOrderID, m.findByOrderIDErr
 }
 
 func (m *mockRepo) FindByPaymentID(_ context.Context, _ string) (domain.Payment, error) {
@@ -80,11 +85,8 @@ func (m *mockRepo) UpdatePayment(_ context.Context, _, _ string, _ float64, _ do
 func makeEvent(orderID string) services.PaymentRequestedEvent {
 	return services.PaymentRequestedEvent{
 		EventType: "payment.requested",
-		EventID:   "evt-001",
-		Timestamp: time.Now(),
 		Payload: services.PaymentRequestPayload{
 			OrderID:       orderID,
-			CorrelationID: "corr-001",
 			CustomerEmail: "test@email.com",
 			Amount:        850.0,
 			Currency:      "BRL",
@@ -105,7 +107,7 @@ func TestProcessPaymentRequest_Success(t *testing.T) {
 		},
 	}
 	broker := &mockBroker{}
-	repo := &mockRepo{}
+	repo := &mockRepo{findByOrderIDErr: errors.New("not found")}
 	svc := services.NewPaymentService(gateway, broker, repo)
 
 	err := svc.ProcessPaymentRequest(context.Background(), makeEvent("order-001"))
@@ -121,11 +123,8 @@ func TestProcessPaymentRequest_Success(t *testing.T) {
 	if repo.saved.BusinessStatus != domain.BusinessStatusPending {
 		t.Errorf("business_status esperado PENDING, got %s", repo.saved.BusinessStatus)
 	}
-	if repo.saved.SagaStatus != domain.SagaStatusAwaitingPayment {
-		t.Errorf("saga_status esperado AWAITING_PAYMENT, got %s", repo.saved.SagaStatus)
-	}
-	if repo.saved.CorrelationID != "corr-001" {
-		t.Errorf("correlation_id incorreto: got %s", repo.saved.CorrelationID)
+	if repo.saved.Status != domain.SagaStatusAwaitingPayment {
+		t.Errorf("status esperado AWAITING_PAYMENT, got %s", repo.saved.Status)
 	}
 	if !broker.checkoutCreatedCalled {
 		t.Error("esperava PublishPaymentCheckoutCreated ser chamado")
@@ -139,7 +138,7 @@ func TestProcessPaymentRequest_GatewayError(t *testing.T) {
 		},
 	}
 	broker := &mockBroker{}
-	repo := &mockRepo{}
+	repo := &mockRepo{findByOrderIDErr: errors.New("not found")}
 	svc := services.NewPaymentService(gateway, broker, repo)
 
 	err := svc.ProcessPaymentRequest(context.Background(), makeEvent("order-002"))

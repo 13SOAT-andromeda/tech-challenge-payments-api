@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Publisher publica eventos no SNS payment.events
 O sistema SHALL publicar todos os eventos de pagamento no tópico SNS `payment.events` (env var `SNS_TOPIC_ARN_PAYMENT`) usando envelope padronizado com `event_type`, `event_id`, `timestamp` e `payload`.
@@ -18,25 +18,25 @@ O sistema SHALL publicar o evento com `event_type = "payment.checkout_created"` 
 
 #### Scenario: Evento publicado com todos os campos obrigatórios
 - **WHEN** o checkout é gerado com sucesso pelo provedor
-- **THEN** o sistema SHALL publicar `payment.checkout_created` com `correlationId`, `orderId`, `paymentId`, `checkoutUrl`, `expiresAt` e `status = PENDING`
+- **THEN** o sistema SHALL publicar `payment.checkout_created` com `order_id`, `payment_id`, `preference_id`, `checkout_url` e `expires_at`
 
 ---
 
 ### Requirement: payment.approved é publicado ao confirmar pagamento
-O sistema SHALL publicar `payment.approved` no SNS quando o webhook indicar aprovação do pagamento.
+O sistema SHALL publicar o evento com `event_type = "payment.approved"` quando o webhook indicar aprovação do pagamento.
 
-#### Scenario: Evento payment.approved publicado com sagaStatus
+#### Scenario: Evento payment.approved publicado com campos obrigatórios
 - **WHEN** o webhook do provedor confirma aprovação e o status é atualizado
-- **THEN** o sistema SHALL publicar `payment.approved` com `correlationId`, `orderId`, `paymentId`, `amount`, `approvedAt` e `sagaStatus = PAYMENT_CONFIRMED`
+- **THEN** o sistema SHALL publicar `payment.approved` com `order_id`, `payment_id`, `preference_id`, `amount`, `currency` e `approved_at`
 
 ---
 
 ### Requirement: payment.failed é publicado ao reprovar pagamento
-O sistema SHALL publicar `payment.failed` no SNS quando o webhook indicar recusa ou falha do pagamento.
+O sistema SHALL publicar o evento com `event_type = "payment.failed"` quando o webhook indicar recusa ou falha do pagamento.
 
 #### Scenario: Evento payment.failed publicado com motivo
-- **WHEN** o webhook do provedor indica recusa
-- **THEN** o sistema SHALL publicar `payment.failed` com `correlationId`, `orderId`, `paymentId`, `reason` e `sagaStatus = FAILED`
+- **WHEN** o webhook do provedor indica recusa ou cancelamento
+- **THEN** o sistema SHALL publicar `payment.failed` com `order_id`, `payment_id`, `preference_id`, `amount`, `currency`, `reason` e `failed_at`
 
 ---
 

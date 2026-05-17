@@ -6,7 +6,6 @@ import (
 )
 
 type PaymentCheckoutCreatedEvent struct {
-	CorrelationID string
 	OrderID       string
 	PaymentID     string
 	PreferenceID  string
@@ -15,7 +14,6 @@ type PaymentCheckoutCreatedEvent struct {
 }
 
 type PaymentApprovedEvent struct {
-	CorrelationID string
 	OrderID       string
 	PaymentID     string
 	PreferenceID  string
@@ -25,7 +23,6 @@ type PaymentApprovedEvent struct {
 }
 
 type PaymentFailedEvent struct {
-	CorrelationID string
 	OrderID       string
 	PaymentID     string
 	PreferenceID  string

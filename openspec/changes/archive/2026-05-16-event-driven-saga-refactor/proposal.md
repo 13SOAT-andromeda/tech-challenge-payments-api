@@ -19,7 +19,7 @@ A Payment API atual publica eventos diretamente em filas SQS e não suporta o pa
 
 ### New Capabilities
 
-- `order-event-consumer`: Consumo de `OrderCreated` via SQS inscrita no SNS `order.events`, com unwrap do envelope SNS e criação de pagamento no banco
+- `order-event-consumer`: Consumo de `OrderCreated` via SQS inscrita no SNS `payment.topic`, com unwrap do envelope SNS e criação de pagamento no banco
 - `sns-event-publisher`: Publicação de eventos no SNS `payment.events` (`PaymentCheckoutCreated`, `PaymentApproved`, `PaymentFailed`)
 - `saga-status-tracking`: Separação de `BusinessStatus` e `SagaStatus` no domínio `Payment` para suporte a orquestração Saga externa
 - `webhook-idempotency`: Idempotência no processamento de webhooks do provedor baseada em `providerPaymentId` e transição de status
