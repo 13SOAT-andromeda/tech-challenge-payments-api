@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Replace ECR_IMAGE with your actual ECR URI before applying:
+# sed -i 's|ECR_IMAGE|<account>.dkr.ecr.us-east-1.amazonaws.com/payments-api:latest|g' k8s/overlays/aws/kustomization.yaml
+images:
+  - name: payments-api
+    newName: ECR_IMAGE
+
+resources:
+  - ../../base
+  - ingress.yaml
+
+configMapGenerator:
+  - name: payments-api-config
+    envs:
+      - .env.host
+    options:
+      disableNameSuffixHash: true
+
+secretGenerator:
+  - name: payments-api-secrets
+    envs:
+      - .env.secrets
+    options:
+      disableNameSuffixHash: true
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+    target:
+      kind: Deployment
+      name: payments-api

@@ -198,6 +198,246 @@ O domínio `Payment` separa estado de negócio de estado de orquestração:
 | `CorrelationID` | `string` | ID de correlação da SAGA distribuída |
 | `Provider` | `string` | Gateway de pagamento (`MERCADO_PAGO`) |
 
+## CI/CD
+
+O projeto tem três GitHub Actions workflows em `.github/workflows/`:
+
+| Workflow | Trigger | O que faz |
+|----------|---------|-----------|
+| `security.yml` | Pull Request | Compila o projeto, roda `gosec` (SAST) e `govulncheck`, publica relatórios SARIF/JSON como artifacts |
+| `sonar.yml` | Pull Request | Roda testes com cobertura e envia resultado ao SonarCloud |
+| `deploy.yml` | Push em `main` / Manual | Verifica infra (ECR + RDS), faz build e push para ECR, deploya no EKS via kustomize |
+
+### Fluxo do deploy
+
+```
+push to main
+    ├── infra-check (paralelo)   ← falha se ECR não existe ou RDS não está "available"
+    ├── build (paralelo)         ← docker build + push para ECR
+    └── deploy (aguarda os dois)
+            ├── aws eks update-kubeconfig
+            ├── sed ECR_IMAGE → URI do ECR
+            ├── gera .env.host e .env.secrets
+            ├── kubectl apply -k k8s/overlays/aws/
+            └── kubectl rollout status deployment/payments-api
+```
+
+### Segredos e Variáveis necessários
+
+Configure no repositório GitHub em **Settings → Secrets and variables → Actions**.
+
+**Secrets:**
+
+| Nome | Descrição |
+|------|-----------|
+| `AWS_ACCESS_KEY_ID` | Credencial AWS |
+| `AWS_SECRET_ACCESS_KEY` | Credencial AWS |
+| `AWS_SESSION_TOKEN` | Token de sessão (obrigatório para contas FIAP lab) |
+| `AWS_REGION` | Região AWS (ex: `us-east-1`) |
+| `MERCADOPAGO_ACCESS_TOKEN` | Token de acesso do Mercado Pago |
+| `MERCADOPAGO_WEBHOOK_SECRET` | Secret HMAC dos webhooks do MP |
+| `MERCADOPAGO_PUBLIC_KEY` | Chave pública do Mercado Pago |
+| `AWS_RDS_DB_PASSWORD` | Senha master do RDS PostgreSQL |
+| `SONAR_TOKEN` | Token do SonarCloud (apenas para o workflow sonar) |
+
+**Variables (não sensíveis):**
+
+| Nome | Exemplo |
+|------|---------|
+| `AWS_ECR_REPOSITORY` | `payments-api` |
+| `AWS_EKS_CLUSTER_NAME` | `tech-challenge-payments` |
+| `AWS_RDS_INSTANCE_ID` | `payments` |
+| `SQS_QUEUE_URL_ORDER_EVENTS` | `https://sqs.us-east-1.amazonaws.com/123456789/payment-order-events-queue` |
+| `SNS_TOPIC_ARN_PAYMENT` | `arn:aws:sns:us-east-1:123456789:payment-events` |
+
+### Setup único (first time)
+
+**1. SonarCloud:**
+- Acesse [sonarcloud.io](https://sonarcloud.io) e crie o projeto `tech-challenge-payments-api` na organização `13soat-andromeda`
+- Copie o token gerado e configure como secret `SONAR_TOKEN`
+- O arquivo `sonar-project.properties` na raiz do repositório já está configurado
+
+**2. ECR Repository:**
+```bash
+aws ecr create-repository \
+  --repository-name payments-api \
+  --region us-east-1
+```
+> Ou adicione um recurso `aws_ecr_repository` ao módulo `infra/modules/eks/` no Terraform.
+
+**3. Infraestrutura AWS (EKS + RDS):**
+```bash
+cd infra
+export TF_VAR_lab_role_arn="arn:aws:iam::<account>:role/LabRole"
+export TF_VAR_db_user="payments"
+export TF_VAR_db_pass="<senha>"
+./apply-terraform.sh
+```
+
+**4. Atualizar `AWS_SESSION_TOKEN` (contas FIAP lab):**
+
+As credenciais do laboratório FIAP expiram. Antes de cada deploy, atualize os três secrets
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) com as credenciais
+geradas no portal do laboratório.
+
+---
+
+## Kubernetes Deployment
+
+### Pré-requisitos
+
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/) (ou `kubectl apply -k`)
+- Docker
+
+---
+
+### Deploy Local (minikube / kind)
+
+**1. Inicie um cluster local com ingress NGINX habilitado:**
+
+```bash
+# minikube
+minikube start
+minikube addons enable ingress
+
+# kind (alternativo)
+# kind create cluster --config kind-config.yaml  (com ingress-nginx instalado)
+```
+
+**2. Build da imagem e carregamento no cluster:**
+
+```bash
+docker build -t payments-api:latest .
+minikube image load payments-api:latest
+```
+
+**3. Aplique o overlay local:**
+
+```bash
+kubectl apply -k k8s/overlays/local/
+```
+
+**4. Verifique o deploy:**
+
+```bash
+kubectl get pods
+kubectl get ingress
+# Acesse: http://$(minikube ip)/health
+```
+
+> O overlay local usa `imagePullPolicy: Never` e valores de desenvolvimento no ConfigMap.
+> Para credenciais reais, edite `k8s/overlays/local/kustomization.yaml` na seção `secretGenerator`.
+
+---
+
+### Deploy AWS (EKS)
+
+**1. Faça build e push da imagem para o ECR:**
+
+```bash
+AWS_ACCOUNT_ID=<seu-account-id>
+AWS_REGION=us-east-1
+
+aws ecr get-login-password --region $AWS_REGION | \
+  docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+docker build -t payments-api:latest .
+docker tag payments-api:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/payments-api:latest
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/payments-api:latest
+```
+
+**2. Configure os arquivos de ambiente:**
+
+```bash
+# Copie o template e preencha com valores reais
+cp k8s/overlays/aws/.env.host.example k8s/overlays/aws/.env.host
+
+# Crie o arquivo de segredos (nunca comite este arquivo)
+cat > k8s/overlays/aws/.env.secrets <<EOF
+MERCADOPAGO_ACCESS_TOKEN=<token>
+MERCADOPAGO_WEBHOOK_SECRET=<secret>
+MERCADOPAGO_PUBLIC_KEY=<public-key>
+DB_PASSWORD=<db-password>
+AWS_ACCESS_KEY_ID=<key-id>
+AWS_SECRET_ACCESS_KEY=<secret-key>
+EOF
+```
+
+**3. Substitua o placeholder da imagem ECR:**
+
+```bash
+sed -i 's|ECR_IMAGE|'$AWS_ACCOUNT_ID'.dkr.ecr.'$AWS_REGION'.amazonaws.com/payments-api:latest|g' \
+  k8s/overlays/aws/kustomization.yaml
+```
+
+**4. Aplique o overlay AWS:**
+
+```bash
+kubectl apply -k k8s/overlays/aws/
+```
+
+**5. Verifique o deploy:**
+
+```bash
+kubectl get pods
+kubectl get ingress  # anote o ADDRESS do ALB
+curl http://<alb-address>/health
+```
+
+---
+
+## Infrastructure (Terraform)
+
+O diretório `infra/` provisionam a infraestrutura AWS (VPC, EKS, RDS) usando Terraform.
+
+### Pré-requisitos
+
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
+- AWS CLI configurado com credenciais válidas
+- Bucket S3 `tech-challenge-13-soat-tfstate` existente (compartilhado com o projeto orders)
+
+### Módulos
+
+| Módulo | Descrição |
+|--------|-----------|
+| `modules/network` | VPC, subnets públicas/privadas, NAT Gateway, Route Tables |
+| `modules/eks` | Cluster EKS com managed node group (t3.medium, 1–4 nós) |
+| `modules/rds` | PostgreSQL 15, db.t3.micro, 20GB, em subnets privadas |
+
+### Variáveis obrigatórias
+
+| Variável | Descrição |
+|----------|-----------|
+| `lab_role_arn` | ARN do IAM role do laboratório FIAP (ex: `arn:aws:iam::<account>:role/LabRole`) |
+| `db_user` | Usuário master do RDS |
+| `db_pass` | Senha master do RDS |
+
+### Aplicar infraestrutura
+
+```bash
+cd infra
+
+# Exportar variáveis sensíveis
+export TF_VAR_lab_role_arn="arn:aws:iam::<account>:role/LabRole"
+export TF_VAR_db_user="payments"
+export TF_VAR_db_pass="<senha-segura>"
+export AWS_DEFAULT_REGION="us-east-1"
+
+# Aplicar (provisiona VPC + EKS + RDS)
+./apply-terraform.sh
+```
+
+O script executa `terraform init`, `terraform apply -auto-approve` e atualiza automaticamente o kubeconfig local com `aws eks update-kubeconfig`.
+
+### Destruir infraestrutura
+
+```bash
+cd infra && terraform destroy
+```
+
+---
+
 ## Decisões de Design
 
 - **`net/http` nativo** em vez do SDK oficial do Mercado Pago — controle total sobre timeouts e retry, sem dependência extra para dois endpoints simples

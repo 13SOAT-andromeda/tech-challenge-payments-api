@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ingress.yaml
+
+configMapGenerator:
+  - name: payments-api-config
+    envs:
+      - config.yaml
+    options:
+      disableNameSuffixHash: true
+
+secretGenerator:
+  - name: payments-api-secrets
+    literals:
+      - MERCADOPAGO_ACCESS_TOKEN=local-token
+      - MERCADOPAGO_WEBHOOK_SECRET=local-secret
+      - MERCADOPAGO_PUBLIC_KEY=local-public-key
+    options:
+      disableNameSuffixHash: true
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+    target:
+      kind: Deployment
+      name: payments-api

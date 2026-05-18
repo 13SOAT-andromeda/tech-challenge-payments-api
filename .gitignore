@@ -5,3 +5,13 @@
 bin/
 .claude/
 .gemini/
+
+# k8s secrets — never commit
+k8s/overlays/aws/.env.host
+k8s/overlays/aws/.env.secrets
+
+# Terraform state and local cache
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl

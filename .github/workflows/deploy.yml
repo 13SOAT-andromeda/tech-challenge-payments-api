@@ -1,0 +1,163 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: Infrastructure Pre-check
+  # Validates that required AWS resources are provisioned before any build or
+  # deploy step executes. Runs in parallel with the build job.
+  # ─────────────────────────────────────────────────────────────────────────────
+  infra-check:
+    name: Infrastructure Pre-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check ECR repository exists
+        run: |
+          echo "Checking ECR repository: ${{ vars.AWS_ECR_REPOSITORY }}"
+          if ! aws ecr describe-repositories \
+              --repository-names "${{ vars.AWS_ECR_REPOSITORY }}" \
+              --region "${{ secrets.AWS_REGION }}" > /dev/null 2>&1; then
+            echo "::error::ECR repository '${{ vars.AWS_ECR_REPOSITORY }}' does not exist in region ${{ secrets.AWS_REGION }}."
+            echo "::error::Create it manually or add an ECR resource to infra/modules/ and run apply-terraform.sh."
+            exit 1
+          fi
+          echo "ECR repository exists."
+
+      - name: Check RDS instance is available
+        run: |
+          echo "Checking RDS instance: ${{ vars.AWS_RDS_INSTANCE_ID }}"
+          STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ vars.AWS_RDS_INSTANCE_ID }}" \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          echo "RDS status: $STATUS"
+          if [ "$STATUS" != "available" ]; then
+            echo "::error::RDS instance '${{ vars.AWS_RDS_INSTANCE_ID }}' is not available (current status: $STATUS)."
+            echo "::error::Run infra/apply-terraform.sh to provision the database, or wait for it to finish modifying."
+            exit 1
+          fi
+          echo "RDS instance is available."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: Build and push Docker image to ECR
+  # Runs in parallel with infra-check. The deploy job waits for both.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    outputs:
+      ecr-registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest \
+            .
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3: Deploy to EKS
+  # Depends on both infra-check and build succeeding.
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: [infra-check, build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ vars.AWS_EKS_CLUSTER_NAME }}" \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set ECR image in kustomize overlay
+        run: |
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest"
+          sed -i "s|ECR_IMAGE|${ECR_IMAGE}|g" k8s/overlays/aws/kustomization.yaml
+
+      - name: Get RDS endpoint
+        id: rds
+        run: |
+          DB_ENDPOINT=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ vars.AWS_RDS_INSTANCE_ID }}" \
+            --query 'DBInstances[0].Endpoint.Address' \
+            --output text)
+          echo "endpoint=${DB_ENDPOINT}" >> $GITHUB_OUTPUT
+
+      - name: Generate .env.host
+        run: |
+          cat > k8s/overlays/aws/.env.host <<EOF
+          DB_HOST=${{ steps.rds.outputs.endpoint }}
+          DB_USER=payments
+          DATABASE_URL=postgres://payments:${{ secrets.AWS_RDS_DB_PASSWORD }}@${{ steps.rds.outputs.endpoint }}:5432/payments?sslmode=require
+          SQS_QUEUE_URL_ORDER_EVENTS=${{ vars.SQS_QUEUE_URL_ORDER_EVENTS }}
+          SNS_TOPIC_ARN_PAYMENT=${{ vars.SNS_TOPIC_ARN_PAYMENT }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          PORT=8080
+          EOF
+
+      - name: Generate .env.secrets
+        run: |
+          cat > k8s/overlays/aws/.env.secrets <<EOF
+          MERCADOPAGO_ACCESS_TOKEN=${{ secrets.MERCADOPAGO_ACCESS_TOKEN }}
+          MERCADOPAGO_WEBHOOK_SECRET=${{ secrets.MERCADOPAGO_WEBHOOK_SECRET }}
+          MERCADOPAGO_PUBLIC_KEY=${{ secrets.MERCADOPAGO_PUBLIC_KEY }}
+          DB_PASSWORD=${{ secrets.AWS_RDS_DB_PASSWORD }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+
+      - name: Apply kustomize overlay to EKS
+        run: kubectl apply -k k8s/overlays/aws/
+
+      - name: Verify deployment rollout
+        run: kubectl rollout status deployment/payments-api --timeout=120s
