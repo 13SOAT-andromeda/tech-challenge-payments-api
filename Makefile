@@ -18,9 +18,8 @@ cluster-down: ## Remove o cluster kind
 
 ingress: ## Instala ingress-nginx e aguarda o controller ficar pronto
 	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
-	kubectl wait --namespace ingress-nginx \
-		--for=condition=ready pod \
-		--selector=app.kubernetes.io/component=controller \
+	kubectl rollout status deployment/ingress-nginx-controller \
+		--namespace ingress-nginx \
 		--timeout=90s
 
 # ── Imagem ────────────────────────────────────────────────────────────────────
