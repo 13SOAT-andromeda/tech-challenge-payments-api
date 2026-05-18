@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: GET /health retorna status agregado da API e suas dependências
-O sistema SHALL expor o endpoint `GET /health` que verifica e reporta o status de saúde do banco de dados PostgreSQL, da fila SQS e do tópico SNS, retornando uma resposta JSON estruturada com o status global e o status individual de cada componente.
+O sistema SHALL expor o endpoint `GET /health` que verifica e reporta o status de saúde do banco de dados PostgreSQL, da fila SQS e do tópico SNS, retornando uma resposta JSON estruturada com o status global e o status individual de cada componente. A rota SHALL ser registrada pelo Gin via `SetupRouter` em vez de `http.NewServeMux`.
 
 #### Scenario: Todos os componentes saudáveis
 - **WHEN** o banco de dados, a fila SQS e o tópico SNS estão acessíveis

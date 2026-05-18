@@ -50,12 +50,12 @@ spec:
       restartPolicy: OnFailure
       initContainers:
         - name: wait-localstack
-          image: busybox
+          image: curlimages/curl:8.7.1
           command:
             - sh
             - -c
             - |
-              until wget -qO- http://localstack:4566/_localstack/health | grep -q '"sqs": "running"'; do
+              until curl -sf http://localstack:4566/_localstack/health | grep -q '"sqs": "available"'; do
                 echo "Aguardando LocalStack..."; sleep 2
               done
       containers:

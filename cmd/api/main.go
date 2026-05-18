@@ -55,7 +55,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(getEnv("AWS_REGION", "us-east-1")))
+	awsOpts := []func(*config.LoadOptions) error{
+		config.WithRegion(getEnv("AWS_REGION", "us-east-1")),
+	}
+	if endpoint := os.Getenv("AWS_ENDPOINT_URL"); endpoint != "" {
+		awsOpts = append(awsOpts, config.WithBaseEndpoint(endpoint))
+	}
+	awsCfg, err := config.LoadDefaultConfig(ctx, awsOpts...)
 	if err != nil {
 		slog.Error("carregar config AWS", "error", err)
 		os.Exit(1)

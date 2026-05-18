@@ -1,8 +1,9 @@
 CLUSTER_NAME := payments
 IMAGE        := payments-api:latest
 OVERLAY      := k8s/overlays/local
+PORT         := 8080
 
-.PHONY: help cluster-up cluster-down ingress build load deploy up restart logs status down destroy
+.PHONY: help cluster-up cluster-down ingress build load deploy up restart logs status down destroy port-forward
 
 help: ## Mostra esta ajuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -55,14 +56,23 @@ status: ## Mostra pods, services e ingress
 logs: ## Acompanha os logs do payments-api
 	kubectl logs -f -l app=payments-api --tail=50
 
+port-forward: ## Expõe a API em localhost:$(PORT) via port-forward (necessário no WSL2)
+	kubectl port-forward svc/payments-api-svc $(PORT):80
+
 # ── Workflows compostos ───────────────────────────────────────────────────────
 
 up: cluster-up ingress build load deploy ## Setup completo: cluster + ingress + build + load + deploy
 	@echo "\n✓ Cluster pronto. Aguardando postgres..."
-	kubectl wait --for=condition=ready pod --selector=app=postgres --timeout=60s
+	kubectl wait --for=condition=ready pod --selector=app=postgres --timeout=120s
 	@echo "✓ Aguardando LocalStack..."
-	kubectl wait --for=condition=ready pod --selector=app=localstack --timeout=90s
-	@echo "✓ API disponível em http://localhost/health"
+	kubectl wait --for=condition=ready pod --selector=app=localstack --timeout=120s
+	@echo "✓ Aguardando LocalStack init..."
+	kubectl wait --for=condition=complete job/localstack-init --timeout=120s
+	@echo "✓ Aguardando payments-api..."
+	kubectl rollout status deployment/payments-api --timeout=120s
+	@echo "\n✓ Cluster pronto!"
+	@echo "  Ingress:      http://localhost/health"
+	@echo "  Port-forward: make port-forward  →  http://localhost:$(PORT)/health  (WSL2)"
 
 rebuild: build load restart ## Rebuild e redeploy sem recriar o cluster
 
