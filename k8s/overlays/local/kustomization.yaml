@@ -5,6 +5,7 @@ resources:
   - ../../base
   - ingress.yaml
   - postgres.yaml
+  - localstack.yaml
 
 configMapGenerator:
   - name: payments-api-config

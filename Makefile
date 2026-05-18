@@ -60,6 +60,8 @@ logs: ## Acompanha os logs do payments-api
 up: cluster-up ingress build load deploy ## Setup completo: cluster + ingress + build + load + deploy
 	@echo "\n✓ Cluster pronto. Aguardando postgres..."
 	kubectl wait --for=condition=ready pod --selector=app=postgres --timeout=60s
+	@echo "✓ Aguardando LocalStack..."
+	kubectl wait --for=condition=ready pod --selector=app=localstack --timeout=90s
 	@echo "✓ API disponível em http://localhost/health"
 
 rebuild: build load restart ## Rebuild e redeploy sem recriar o cluster
