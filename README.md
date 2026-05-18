@@ -292,38 +292,67 @@ geradas no portal do laboratório.
 
 ---
 
-### Deploy Local (minikube / kind)
+### Deploy Local (kind)
 
-**1. Inicie um cluster local com ingress NGINX habilitado:**
+**1. Crie o cluster com mapeamento de portas para o ingress:**
 
-```bash
-# minikube
-minikube start
-minikube addons enable ingress
+Crie o arquivo `kind-config.yaml` na raiz do projeto:
 
-# kind (alternativo)
-# kind create cluster --config kind-config.yaml  (com ingress-nginx instalado)
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
 ```
 
-**2. Build da imagem e carregamento no cluster:**
+```bash
+kind create cluster --name payments --config kind-config.yaml
+```
+
+**2. Instale o ingress-nginx:**
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+
+# Aguarde o controller ficar pronto
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=90s
+```
+
+**3. Build da imagem e carregamento no cluster:**
 
 ```bash
 docker build -t payments-api:latest .
-minikube image load payments-api:latest
+kind load docker-image payments-api:latest --name payments
 ```
 
-**3. Aplique o overlay local:**
+**4. Aplique o overlay local:**
 
 ```bash
 kubectl apply -k k8s/overlays/local/
 ```
 
-**4. Verifique o deploy:**
+**5. Verifique o deploy:**
 
 ```bash
 kubectl get pods
 kubectl get ingress
-# Acesse: http://$(minikube ip)/health
+# Acesse: http://localhost/health
 ```
 
 > O overlay local usa `imagePullPolicy: Never` e valores de desenvolvimento no ConfigMap.
