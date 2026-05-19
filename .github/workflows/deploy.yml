@@ -147,10 +147,13 @@ jobs:
 
       - name: Generate .env.host
         run: |
-          printf 'DB_HOST=%s\nDB_USER=payments\nDATABASE_URL=postgres://payments:%s@%s:5432/payments?sslmode=require\nSQS_QUEUE_URL_ORDER_EVENTS=%s\nSNS_TOPIC_ARN_PAYMENT=%s\nAWS_REGION=%s\nPORT=8080\n' \
+          printf 'DB_HOST=%s\nDB_USER=%s\nDATABASE_URL=postgres://%s:%s@%s:5432/%s?sslmode=require\nSQS_QUEUE_URL_ORDER_EVENTS=%s\nSNS_TOPIC_ARN_PAYMENT=%s\nAWS_REGION=%s\nPORT=8080\n' \
             "${{ steps.rds.outputs.endpoint }}" \
+            "${{ vars.AWS_RDS_DB_USER }}" \
+            "${{ vars.AWS_RDS_DB_USER }}" \
             "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
             "${{ steps.rds.outputs.endpoint }}" \
+            "${{ vars.AWS_RDS_PAYMENT_NAME }}" \
             "${{ steps.aws-resources.outputs.sqs_url }}" \
             "${{ steps.aws-resources.outputs.sns_arn }}" \
             "${{ secrets.AWS_REGION }}" \
