@@ -1,0 +1,50 @@
+# Arquivo: aws/apigateway.tf
+# Adicionar no repositório iac-tech-challenge-infra
+
+data "aws_lb" "payments" {
+  tags = {
+    "ingress.k8s.aws/stack" = "default/payments-api-ingress"
+  }
+}
+
+data "aws_lb_listener" "payments_http" {
+  load_balancer_arn = data.aws_lb.payments.arn
+  port              = 80
+}
+
+resource "aws_apigatewayv2_vpc_link" "payments" {
+  name               = "payments-api-vpc-link"
+  security_group_ids = [module.eks.cluster_security_group_id]
+  subnet_ids         = module.vpc.private_subnets
+}
+
+resource "aws_apigatewayv2_api" "payments" {
+  name          = "payments-api"
+  protocol_type = "HTTP"
+}
+
+resource "aws_apigatewayv2_integration" "payments_webhook" {
+  api_id             = aws_apigatewayv2_api.payments.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "POST"
+  integration_uri    = data.aws_lb_listener.payments_http.arn
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.payments.id
+}
+
+resource "aws_apigatewayv2_route" "payments_webhook" {
+  api_id    = aws_apigatewayv2_api.payments.id
+  route_key = "POST /webhooks/mercadopago"
+  target    = "integrations/${aws_apigatewayv2_integration.payments_webhook.id}"
+}
+
+resource "aws_apigatewayv2_stage" "payments_default" {
+  api_id      = aws_apigatewayv2_api.payments.id
+  name        = "$default"
+  auto_deploy = true
+}
+
+output "payments_webhook_url" {
+  description = "URL HTTPS do webhook para configurar no Mercado Pago"
+  value       = "${aws_apigatewayv2_stage.payments_default.invoke_url}/webhooks/mercadopago"
+}
