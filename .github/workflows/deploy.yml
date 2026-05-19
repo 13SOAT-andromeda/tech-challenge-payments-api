@@ -133,14 +133,26 @@ jobs:
             --output text)
           echo "endpoint=${DB_ENDPOINT}" >> $GITHUB_OUTPUT
 
+      - name: Get SQS and SNS endpoints
+        id: aws-resources
+        run: |
+          SQS_URL=$(aws sqs get-queue-url \
+            --queue-name "${{ vars.SQS_PAYMENT_QUEUE_NAME }}" \
+            --query QueueUrl --output text)
+          SNS_ARN=$(aws sns list-topics \
+            --query "Topics[?contains(TopicArn,'${{ vars.SNS_PAYMENT_TOPIC_NAME }}')].TopicArn | [0]" \
+            --output text)
+          echo "sqs_url=${SQS_URL}" >> $GITHUB_OUTPUT
+          echo "sns_arn=${SNS_ARN}" >> $GITHUB_OUTPUT
+
       - name: Generate .env.host
         run: |
           printf 'DB_HOST=%s\nDB_USER=payments\nDATABASE_URL=postgres://payments:%s@%s:5432/payments?sslmode=require\nSQS_QUEUE_URL_ORDER_EVENTS=%s\nSNS_TOPIC_ARN_PAYMENT=%s\nAWS_REGION=%s\nPORT=8080\n' \
             "${{ steps.rds.outputs.endpoint }}" \
             "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
             "${{ steps.rds.outputs.endpoint }}" \
-            "${{ vars.SQS_QUEUE_URL_ORDER_EVENTS }}" \
-            "${{ vars.SNS_TOPIC_ARN_PAYMENT }}" \
+            "${{ steps.aws-resources.outputs.sqs_url }}" \
+            "${{ steps.aws-resources.outputs.sns_arn }}" \
             "${{ secrets.AWS_REGION }}" \
             > k8s/overlays/aws/.env.host
 
