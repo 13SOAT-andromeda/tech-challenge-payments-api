@@ -39,14 +39,14 @@ jobs:
 
       - name: Check RDS instance is available
         run: |
-          echo "Checking RDS instance: ${{ vars.AWS_RDS_INSTANCE_ID }}"
+          echo "Checking RDS instance: ${{ vars.AWS_RDS_PAYMENT_NAME }}"
           STATUS=$(aws rds describe-db-instances \
-            --db-instance-identifier "${{ vars.AWS_RDS_INSTANCE_ID }}" \
+            --db-instance-identifier "${{ vars.AWS_RDS_PAYMENT_NAME }}" \
             --query 'DBInstances[0].DBInstanceStatus' \
             --output text 2>/dev/null || echo "NOT_FOUND")
           echo "RDS status: $STATUS"
           if [ "$STATUS" != "available" ]; then
-            echo "::error::RDS instance '${{ vars.AWS_RDS_INSTANCE_ID }}' is not available (current status: $STATUS)."
+            echo "::error::RDS instance '${{ vars.AWS_RDS_PAYMENT_NAME }}' is not available (current status: $STATUS)."
             echo "::error::Run infra/apply-terraform.sh to provision the database, or wait for it to finish modifying."
             exit 1
           fi
@@ -128,7 +128,7 @@ jobs:
         id: rds
         run: |
           DB_ENDPOINT=$(aws rds describe-db-instances \
-            --db-instance-identifier "${{ vars.AWS_RDS_INSTANCE_ID }}" \
+            --db-instance-identifier "${{ vars.AWS_RDS_PAYMENT_NAME }}" \
             --query 'DBInstances[0].Endpoint.Address' \
             --output text)
           echo "endpoint=${DB_ENDPOINT}" >> $GITHUB_OUTPUT
