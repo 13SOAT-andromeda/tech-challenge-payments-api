@@ -176,3 +176,29 @@ jobs:
 
       - name: Verify deployment rollout
         run: kubectl rollout status deployment/payments-api --timeout=120s
+
+      - name: Wait for internal ALB to be ready
+        run: |
+          echo "Aguardando ALB interno ficar disponível..."
+          for i in $(seq 1 20); do
+            STATUS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?contains(LoadBalancerName,'payments-api-ingress')].State.Code" \
+              --output text 2>/dev/null || echo "not_found")
+            echo "Status: $STATUS"
+            if [ "$STATUS" = "active" ]; then
+              echo "ALB pronto."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Timeout aguardando ALB." && exit 1
+
+      - name: Apply API Gateway Terraform
+        working-directory: infra
+        run: |
+          terraform init
+          terraform apply -target=module.apigateway -auto-approve
+
+      - name: Show webhook URL
+        working-directory: infra
+        run: terraform output webhook_url

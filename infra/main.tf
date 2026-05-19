@@ -47,6 +47,42 @@ module "rds" {
   eks_cluster_security_group_id = module.eks.cluster_security_group_id
 }
 
+data "aws_vpc" "shared" {
+  tags = {
+    Name = "eks-tech-challenge-vpc"
+  }
+}
+
+data "aws_subnets" "private" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.shared.id]
+  }
+  tags = {
+    "kubernetes.io/role/internal-elb" = "1"
+  }
+}
+
+data "aws_lb" "payments" {
+  tags = {
+    "ingress.k8s.aws/stack" = "default/payments-api-ingress"
+  }
+}
+
+data "aws_lb_listener" "payments_http" {
+  load_balancer_arn = data.aws_lb.payments.arn
+  port              = 80
+}
+
+module "apigateway" {
+  source = "./modules/apigateway"
+
+  api_name           = "payments-api"
+  subnet_ids         = data.aws_subnets.private.ids
+  security_group_ids = [module.eks.cluster_security_group_id]
+  alb_listener_arn   = data.aws_lb_listener.payments_http.arn
+}
+
 output "eks_cluster_name" {
   value = module.eks.cluster_name
 }
@@ -58,4 +94,9 @@ output "eks_cluster_endpoint" {
 output "rds_endpoint" {
   value     = module.rds.db_endpoint
   sensitive = true
+}
+
+output "webhook_url" {
+  description = "URL do webhook para configurar no Mercado Pago"
+  value       = "${module.apigateway.api_endpoint}/webhooks/mercadopago"
 }
