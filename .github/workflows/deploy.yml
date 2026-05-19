@@ -121,7 +121,7 @@ jobs:
 
       - name: Set ECR image in kustomize overlay
         run: |
-          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}:latest"
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}"
           sed -i "s|ECR_IMAGE|${ECR_IMAGE}|g" k8s/overlays/aws/kustomization.yaml
 
       - name: Get RDS endpoint
@@ -135,26 +135,25 @@ jobs:
 
       - name: Generate .env.host
         run: |
-          cat > k8s/overlays/aws/.env.host <<EOF
-          DB_HOST=${{ steps.rds.outputs.endpoint }}
-          DB_USER=payments
-          DATABASE_URL=postgres://payments:${{ secrets.AWS_RDS_DB_PASSWORD }}@${{ steps.rds.outputs.endpoint }}:5432/payments?sslmode=require
-          SQS_QUEUE_URL_ORDER_EVENTS=${{ vars.SQS_QUEUE_URL_ORDER_EVENTS }}
-          SNS_TOPIC_ARN_PAYMENT=${{ vars.SNS_TOPIC_ARN_PAYMENT }}
-          AWS_REGION=${{ secrets.AWS_REGION }}
-          PORT=8080
-          EOF
+          printf 'DB_HOST=%s\nDB_USER=payments\nDATABASE_URL=postgres://payments:%s@%s:5432/payments?sslmode=require\nSQS_QUEUE_URL_ORDER_EVENTS=%s\nSNS_TOPIC_ARN_PAYMENT=%s\nAWS_REGION=%s\nPORT=8080\n' \
+            "${{ steps.rds.outputs.endpoint }}" \
+            "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
+            "${{ steps.rds.outputs.endpoint }}" \
+            "${{ vars.SQS_QUEUE_URL_ORDER_EVENTS }}" \
+            "${{ vars.SNS_TOPIC_ARN_PAYMENT }}" \
+            "${{ secrets.AWS_REGION }}" \
+            > k8s/overlays/aws/.env.host
 
       - name: Generate .env.secrets
         run: |
-          cat > k8s/overlays/aws/.env.secrets <<EOF
-          MERCADOPAGO_ACCESS_TOKEN=${{ secrets.MERCADOPAGO_ACCESS_TOKEN }}
-          MERCADOPAGO_WEBHOOK_SECRET=${{ secrets.MERCADOPAGO_WEBHOOK_SECRET }}
-          MERCADOPAGO_PUBLIC_KEY=${{ secrets.MERCADOPAGO_PUBLIC_KEY }}
-          DB_PASSWORD=${{ secrets.AWS_RDS_DB_PASSWORD }}
-          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          EOF
+          printf 'MERCADOPAGO_ACCESS_TOKEN=%s\nMERCADOPAGO_WEBHOOK_SECRET=%s\nMERCADOPAGO_PUBLIC_KEY=%s\nDB_PASSWORD=%s\nAWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' \
+            "${{ secrets.MERCADOPAGO_ACCESS_TOKEN }}" \
+            "${{ secrets.MERCADOPAGO_WEBHOOK_SECRET }}" \
+            "${{ secrets.MERCADOPAGO_PUBLIC_KEY }}" \
+            "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
+            "${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            "${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            > k8s/overlays/aws/.env.secrets
 
       - name: Apply kustomize overlay to EKS
         run: kubectl apply -k k8s/overlays/aws/
