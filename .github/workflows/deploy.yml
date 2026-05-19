@@ -27,11 +27,11 @@ jobs:
 
       - name: Check ECR repository exists
         run: |
-          echo "Checking ECR repository: ${{ vars.AWS_ECR_REPOSITORY }}"
+          echo "Checking ECR repository: ${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}"
           if ! aws ecr describe-repositories \
-              --repository-names "${{ vars.AWS_ECR_REPOSITORY }}" \
+              --repository-names "${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}" \
               --region "${{ secrets.AWS_REGION }}" > /dev/null 2>&1; then
-            echo "::error::ECR repository '${{ vars.AWS_ECR_REPOSITORY }}' does not exist in region ${{ secrets.AWS_REGION }}."
+            echo "::error::ECR repository '${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}' does not exist in region ${{ secrets.AWS_REGION }}."
             echo "::error::Create it manually or add an ECR resource to infra/modules/ and run apply-terraform.sh."
             exit 1
           fi
@@ -81,12 +81,12 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}:latest \
             .
 
       - name: Push Docker image to ECR
         run: |
-          docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}:latest
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Job 3: Deploy to EKS
@@ -121,7 +121,7 @@ jobs:
 
       - name: Set ECR image in kustomize overlay
         run: |
-          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_ECR_REPOSITORY }}:latest"
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ vars.AWS_PAYMENT_ECR_REPOSITORY }}:latest"
           sed -i "s|ECR_IMAGE|${ECR_IMAGE}|g" k8s/overlays/aws/kustomization.yaml
 
       - name: Get RDS endpoint
