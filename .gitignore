@@ -9,6 +9,7 @@ bin/
 # k8s secrets — never commit
 k8s/overlays/aws/.env.host
 k8s/overlays/aws/.env.secrets
+k8s/overlays/local/localstack-auth.env
 
 # Terraform state and local cache
 infra/.terraform/

@@ -7,7 +7,7 @@ spec:
   rules:
     - http:
         paths:
-          - path: /
+          - path: /webhooks/mercadopago
             pathType: Prefix
             backend:
               service:

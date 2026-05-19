@@ -15,24 +15,15 @@ services:
       timeout: 5s
       retries: 10
 
-#   app:
-#     build: .
-#     depends_on:
-#       postgres:
-#         condition: service_healthy
-#     restart: on-failure
-#     ports:
-#       - "${PORT:-8080}:8080"
-#     environment:
-#       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
-#       MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN}
-#       MERCADOPAGO_WEBHOOK_SECRET: ${MERCADOPAGO_WEBHOOK_SECRET}
-#       SQS_QUEUE_URL_ORDER_EVENTS: ${SQS_QUEUE_URL_ORDER_EVENTS}
-#       SNS_TOPIC_ARN_PAYMENT: ${SNS_TOPIC_ARN_PAYMENT}
-#       AWS_REGION: ${AWS_REGION:-us-east-1}
-#       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-#       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-#       PORT: ${PORT:-8080}
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=ls-tOtUbave-1099-1979-pEti-qUxidUfA5b1e
+      - SQS_ENDPOINT_STRATEGY=off
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres_data:

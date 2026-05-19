@@ -3,7 +3,9 @@ IMAGE        := payments-api:latest
 OVERLAY      := k8s/overlays/local
 PORT         := 8080
 
-.PHONY: help cluster-up cluster-down ingress build load deploy up restart logs status down destroy port-forward
+SHELL := /bin/bash
+
+.PHONY: help cluster-up cluster-down ingress build load deploy up restart logs status down destroy port-forward localstack-forward localstack-setup localstack-endpoints localstack-apigw
 
 help: ## Mostra esta ajuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -59,6 +61,72 @@ logs: ## Acompanha os logs do payments-api
 port-forward: ## Expõe a API em localhost:$(PORT) via port-forward (necessário no WSL2)
 	kubectl port-forward svc/payments-api-svc $(PORT):80
 
+localstack-forward: ## Expõe o LocalStack em localhost:4566 via port-forward
+	kubectl port-forward svc/localstack 4566:4566
+
+localstack-endpoints: ## Cria Endpoints no cluster apontando para o LocalStack externo (docker-compose)
+	@HOST_GATEWAY=$$(docker network inspect kind --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1); \
+	if [ -z "$$HOST_GATEWAY" ]; then \
+		echo "Erro: rede kind não encontrada. Execute make cluster-up primeiro." && exit 1; \
+	fi; \
+	echo "Apontando localstack service para $$HOST_GATEWAY:4566"; \
+	HOST_GATEWAY=$$HOST_GATEWAY envsubst < $(OVERLAY)/localstack-endpoints.yaml.tpl | kubectl apply -f -
+
+localstack-apigw: ## Cria REST API Gateway no LocalStack com rota pública POST /webhooks/mercadopago
+	@ENDPOINT=http://localhost:4566; \
+	REGION=us-east-1; \
+	API_NAME=payments-webhook-api; \
+	EXISTING_ID=$$(aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway get-rest-apis \
+		--query "items[?name=='$$API_NAME'].id" --output text 2>/dev/null); \
+	if [ -n "$$EXISTING_ID" ]; then \
+		echo "API Gateway '$$API_NAME' já existe ($$EXISTING_ID). Removendo para recriar..."; \
+		aws --endpoint-url=$$ENDPOINT --region $$REGION apigateway delete-rest-api --rest-api-id $$EXISTING_ID; \
+	fi; \
+	echo "Criando REST API Gateway: $$API_NAME"; \
+	API_ID=$$(aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway create-rest-api \
+		--name $$API_NAME \
+		--query 'id' --output text); \
+	ROOT_ID=$$(aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway get-resources --rest-api-id $$API_ID \
+		--query 'items[?path==`/`].id' --output text); \
+	WH_ID=$$(aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway create-resource \
+		--rest-api-id $$API_ID --parent-id $$ROOT_ID --path-part webhooks \
+		--query 'id' --output text); \
+	MP_ID=$$(aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway create-resource \
+		--rest-api-id $$API_ID --parent-id $$WH_ID --path-part mercadopago \
+		--query 'id' --output text); \
+	aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway put-method \
+		--rest-api-id $$API_ID --resource-id $$MP_ID \
+		--http-method POST --authorization-type NONE > /dev/null; \
+	echo "Criando integração → http://host.docker.internal:80/webhooks/mercadopago"; \
+	aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway put-integration \
+		--rest-api-id $$API_ID --resource-id $$MP_ID \
+		--http-method POST --type HTTP_PROXY \
+		--integration-http-method POST \
+		--uri http://host.docker.internal:80/webhooks/mercadopago \
+		--passthrough-behavior WHEN_NO_MATCH > /dev/null; \
+	aws --endpoint-url=$$ENDPOINT --region $$REGION \
+		apigateway create-deployment \
+		--rest-api-id $$API_ID --stage-name local > /dev/null; \
+	echo ""; \
+	echo "✓ API Gateway pronto. Somente POST /webhooks/mercadopago está exposto."; \
+	echo "  Webhook público: http://$$API_ID.execute-api.localhost.localstack.cloud:4566/local/webhooks/mercadopago"
+
+localstack-setup: ## Cria fila SQS e tópico SNS no LocalStack local (docker-compose)
+	@echo "Criando fila SQS: payment-order-events-queue"
+	aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+		sqs create-queue --queue-name payment-order-events-queue
+	@echo "Criando tópico SNS: payment-events"
+	aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+		sns create-topic --name payment-events
+	@echo "Feito. Recursos disponíveis no LocalStack."
+
 # ── Workflows compostos ───────────────────────────────────────────────────────
 
 up: cluster-up ingress build load deploy ## Setup completo: cluster + ingress + build + load + deploy
@@ -66,7 +134,7 @@ up: cluster-up ingress build load deploy ## Setup completo: cluster + ingress + 
 	kubectl wait --for=condition=ready pod --selector=app=postgres --timeout=120s
 	@echo "✓ Aguardando LocalStack..."
 	kubectl wait --for=condition=ready pod --selector=app=localstack --timeout=120s
-	@echo "✓ Aguardando LocalStack init..."
+	@echo "✓ Aguardando LocalStack init (cria fila e tópico)..."
 	kubectl wait --for=condition=complete job/localstack-init --timeout=120s
 	@echo "✓ Aguardando payments-api..."
 	kubectl rollout status deployment/payments-api --timeout=120s
