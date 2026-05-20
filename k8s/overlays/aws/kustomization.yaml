@@ -8,7 +8,6 @@ images:
 
 resources:
   - ../../base
-  - ingress.yaml
 
 configMapGenerator:
   - name: payments-api-config

@@ -10,7 +10,7 @@ func SetupRouter(webhook *WebhookHandler, health *HealthHandler) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	r.POST("/webhooks/mercadopago", gin.WrapF(webhook.Handle))
+	r.POST("/v1/payments/webhooks/mercadopago", gin.WrapF(webhook.Handle))
 	r.GET("/health", gin.WrapF(health.Handle))
 	r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
