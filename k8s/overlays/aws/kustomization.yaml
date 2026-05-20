@@ -14,6 +14,7 @@ configMapGenerator:
   - name: payments-api-config
     envs:
       - .env.host
+      - config.yaml
     options:
       disableNameSuffixHash: true
 
@@ -29,6 +30,17 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: Always
+    target:
+      kind: Deployment
+      name: payments-api
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: DD_AGENT_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
     target:
       kind: Deployment
       name: payments-api
