@@ -1,0 +1,6 @@
+init_config:
+
+instances:
+  - name: tech-challenge-payments-api-health
+    url: http://app:8080/health
+    timeout: 5
