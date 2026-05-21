@@ -161,18 +161,18 @@ jobs:
 
       - name: Generate .env.secrets
         run: |
-          printf 'MERCADOPAGO_ACCESS_TOKEN=%s\nMERCADOPAGO_WEBHOOK_SECRET=%s\nMERCADOPAGO_PUBLIC_KEY=%s\nDB_PASSWORD=%s\nAWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_SESSION_TOKEN=%s\n' \
+          printf 'MERCADOPAGO_ACCESS_TOKEN=%s\nMERCADOPAGO_WEBHOOK_SECRET=%s\nMERCADOPAGO_PUBLIC_KEY=%s\nDB_PASSWORD=%s\n' \
             "${{ secrets.MERCADOPAGO_ACCESS_TOKEN }}" \
             "${{ secrets.MERCADOPAGO_WEBHOOK_SECRET }}" \
             "${{ secrets.MERCADOPAGO_PUBLIC_KEY }}" \
             "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
-            "${{ secrets.AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
-            "${{ secrets.AWS_SESSION_TOKEN }}" \
             > k8s/overlays/aws/.env.secrets
 
       - name: Apply kustomize overlay to EKS
         run: kubectl apply -k k8s/overlays/aws/
+
+      - name: Restart deployment to pull new image
+        run: kubectl rollout restart deployment/payments-api
 
       - name: Verify deployment rollout
         run: kubectl rollout status deployment/payments-api --timeout=120s
